@@ -439,3 +439,32 @@ test('a stale observation flush cannot write or requeue into a replacement sessi
   assert.deepEqual(await readdir(home).catch(() => []), []);
   await handlers.get('session_shutdown')!({}, ctxB);
 });
+
+test('the installed hooks keep stale tool outputs and old rounds verbatim by default', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-verbatim-'));
+  const handlers = new Map<string, Handler>();
+  const pi = { on(name: string, handler: Handler) { handlers.set(name, handler); } } as unknown as ExtensionAPI;
+  installMemoryHooks(pi, { home: join(root, 'home') });
+  const ctx = {
+    cwd: root, model: { provider: 'offline', id: 'wide', contextWindow: 272_000, maxTokens: 128_000 },
+    getSystemPrompt: () => 'system', abort: () => {}, ui: { notify: () => {} },
+    sessionManager: { getSessionId: () => 'verbatim', getBranch: () => [], getEntries: () => [] },
+  };
+  await handlers.get('session_start')!({}, ctx);
+  t.after(async () => { await handlers.get('session_shutdown')!({}, ctx); await rm(root, { recursive: true, force: true }); });
+  // 20 completed read rounds of ~2k tokens each: well past the masking and retirement batches.
+  const rounds = Array.from({ length: 20 }, (_, index) => [
+    { role: 'assistant', content: [{ type: 'toolCall', id: `c${index}`, name: 'read', arguments: { path: `src/file-${index}.ts` } }] },
+    { role: 'toolResult', toolCallId: `c${index}`, content: [{ type: 'text', text: `// file ${index}\n${'x'.repeat(8_000)}` }] },
+  ]).flat();
+  const messages = [
+    { role: 'user', content: 'first task' }, ...rounds.slice(0, 20),
+    { role: 'assistant', content: [{ type: 'text', text: 'first task done' }] },
+    { role: 'user', content: 'second task' }, ...rounds.slice(20),
+  ];
+  const result = await handlers.get('context')!({ messages }, ctx);
+  assert.deepEqual(result, {}, 'no output is elided and no round is retired');
+});

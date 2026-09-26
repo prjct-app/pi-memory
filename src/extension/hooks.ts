@@ -478,10 +478,14 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
       return { toolSchemaBytes, toolSchemaTokens: Math.ceil(toolSchemaBytes / 4) };
     } catch { return {}; }
   }, ...(options.handoff === undefined ? {} : { budget: options.handoff }),
-  ...(options.observations === undefined ? {} : { observations: options.observations }),
-  ...(options.history === undefined ? {} : { history: options.history }),
-  // Jev judges old turns in the background; without a key, only the structural policy retires history.
-  judge: createTurnJudge({
+  // Off unless a caller opts in. Measured 2026-09-26 on four real sessions: the model
+  // received 29-60% of its history, and 64-93% of the elided outputs belonged to the
+  // task in progress. self-compact is the one context limit; this layer only keeps the
+  // hard window fallback in selectHandoffMessages.
+  observations: options.observations ?? { enabled: false },
+  history: options.history ?? { enabled: false },
+  // Jev judges old turns in the background; its verdicts only apply when history retirement is on.
+  ...(options.history?.enabled === false || options.history === undefined ? {} : { judge: createTurnJudge({
     ask: async () => {
       const provider = (await reranker().catch(() => undefined))?.rerank;
       return provider?.ask ? (state: Record<string, unknown>, questions: Readonly<Record<string, string>>, signal?: AbortSignal) =>
@@ -491,7 +495,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
       const project = await engine().catch(() => undefined);
       return project ? project.projection.activeFacts(project.scopeId, 60).map(fact => fact.statement) : [];
     },
-  }) });
+  }) }) });
 
   /**
    * Records what this turn cost. The host reports the size of the whole
