@@ -130,7 +130,10 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     ...(options.home === undefined ? {} : { home: options.home }),
     ...(options.embeddingProvider ? { provider: options.embeddingProvider } : {}),
   });
-  const outputCaps: OutputCapPolicy = { ...DEFAULT_OUTPUT_CAP_POLICY, ...options.outputCaps };
+  // Off unless a caller opts in: Pi's own tools already truncate at 50 KiB / 2000 lines
+  // and keep the full output on disk. A second, tighter cut here hid evidence the model
+  // had asked for (a test log's middle, grep matches past 12k chars).
+  const outputCaps: OutputCapPolicy = { ...DEFAULT_OUTPUT_CAP_POLICY, enabled: false, ...options.outputCaps };
   const onActivity = options.onActivity;
   const slot: { current: MemorySession } = { current: {
     generation: {}, prompt: '', evidence: new Map(), contextTokens: 0, observations: [], declarations: [],
