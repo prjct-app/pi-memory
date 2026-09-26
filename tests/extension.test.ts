@@ -468,3 +468,14 @@ test('the installed hooks keep stale tool outputs and old rounds verbatim by def
   const result = await handlers.get('context')!({ messages }, ctx);
   assert.deepEqual(result, {}, 'no output is elided and no round is retired');
 });
+
+test('the installed hooks leave bash and grep output to Pi\'s own truncation', async () => {
+  const handlers = new Map<string, Handler>();
+  const pi = { on(name: string, handler: Handler) { handlers.set(name, handler); } } as unknown as ExtensionAPI;
+  installMemoryHooks(pi);
+  const ctx = { sessionManager: { getSessionId: () => 'caps-off' } };
+  const log = Array.from({ length: 1_500 }, (_, index) => `line ${index} ${'y'.repeat(30)}`).join('\n');
+  const result = await handlers.get('tool_result')!({ toolName: 'bash', toolCallId: 'b1', isError: false,
+    content: [{ type: 'text', text: log }], details: {} }, ctx);
+  assert.equal(result, undefined, 'a 50k-char bash log reaches the model as Pi produced it');
+});
