@@ -52,7 +52,15 @@ export type RerankConfig = Readonly<{
 /** Pinned like pi-qa pins its evaluator: a silent model swap would move every threshold below. */
 export const DEFAULT_RERANK_MODEL = 'jev-1.13.0';
 export const DEFAULT_RERANK_CANDIDATES = 24;
-export const DEFAULT_RERANK_TIMEOUT_MS = 15_000;
+/**
+ * The rerank is an improvement over the fusion, so it may never be the reason a
+ * lookup stalls. Measured on the real request shape (24 candidates, 3 KB of
+ * state, pinned model): about 250 ms, about 1 s on a cold connection. Two
+ * seconds keeps nearly every answer and bounds the wait at two; past it the
+ * lookup returns the fused order, exactly as a timeout always has. A project
+ * that wants to wait longer says so in rerank.timeoutMs.
+ */
+export const DEFAULT_RERANK_TIMEOUT_MS = 2_000;
 
 // Thresholds from TypeSafe's RAG passage cookbook. They are probabilities, not
 // the tuned relevance floors in federated.ts, and are deliberately kept apart
@@ -109,17 +117,30 @@ type NoulAnswer = { noul?: number };
 export class TypeSafeRerankProvider implements RerankProvider {
   readonly model: string;
   private readonly client: TypeSafeClient;
+  private readonly deadlineMs: number;
 
   constructor(config: Required<Pick<RerankConfig, 'apiKey'>> & RerankConfig) {
     this.model = config.model ?? DEFAULT_RERANK_MODEL;
+    this.deadlineMs = config.timeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS;
     this.client = new TypeSafeClient({
       apiKey: config.apiKey,
       defaultModel: this.model,
       logLevel: 'off',
-      timeout: config.timeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS,
+      timeout: this.deadlineMs,
+      // One attempt, like every other Jev client in these packages. A retried
+      // judgement is a second wait for an answer the search no longer needs:
+      // the fused order is already computed and is what a timeout falls back to.
+      retry: { maxRetries: 0 },
       dangerouslyAllowBrowser: false,
       ...(config.baseUrl ? { baseURL: config.baseUrl } : {}),
     });
+  }
+
+  /** The deadline is enforced here, so no SDK default can hold a lookup open. */
+  private bounded(signal?: AbortSignal): AbortSignal {
+    return signal
+      ? AbortSignal.any([AbortSignal.timeout(this.deadlineMs), signal])
+      : AbortSignal.timeout(this.deadlineMs);
   }
 
   async judge(
@@ -132,7 +153,7 @@ export class TypeSafeRerankProvider implements RerankProvider {
     const { state, questions } = rerankRequest(queries, candidates);
     const serialized = JSON.stringify(state);
     if (serialized.length > MAX_STATE_CHARS) throw new Error('Rerank state exceeded its size budget.');
-    const result = await this.client.systemOne({ model: this.model, state: state as never, questions: questions as never }, options);
+    const result = await this.client.systemOne({ model: this.model, state: state as never, questions: questions as never }, { ...options, signal: this.bounded(options.signal) });
     const answers = result.answers as Record<string, NoulAnswer | undefined>;
     return new Map(candidates.map((candidate, index) => {
       const id = slot(index);
@@ -150,7 +171,7 @@ export class TypeSafeRerankProvider implements RerankProvider {
     const keys = Object.keys(questions);
     if (!keys.length) return new Map();
     if (JSON.stringify(state).length > MAX_STATE_CHARS) throw new Error('Jev state exceeded its size budget.');
-    const result = await this.client.systemOne({ model: this.model, state: state as never, questions: askRequest(questions) as never }, options);
+    const result = await this.client.systemOne({ model: this.model, state: state as never, questions: askRequest(questions) as never }, { ...options, signal: this.bounded(options.signal) });
     const answers = result.answers as Record<string, NoulAnswer | undefined>;
     return new Map(keys.map(key => [key, score(answers[key])] as const));
   }

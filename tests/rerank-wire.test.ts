@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
-import { TypeSafeRerankProvider } from '../src/retrieval/rerank.ts';
+import { DEFAULT_RERANK_TIMEOUT_MS, TypeSafeRerankProvider } from '../src/retrieval/rerank.ts';
 
 /**
  * The batching decision is only real on the wire. This drives the actual SDK
@@ -58,4 +58,30 @@ test('a rejected credential surfaces as a failure the caller can degrade on', as
     apiKey: 'k'.repeat(20), enabled: true, baseUrl: `http://127.0.0.1:${port}`, timeoutMs: 2_000,
   });
   await assert.rejects(provider.judge(['q'], [{ key: 'c1', text: 'body', source: 'fixture', kind: 'fact' }]));
+});
+
+/**
+ * The rerank is an improvement over the fusion, never a reason for a memory
+ * lookup to stall: the deadline is the default, not something a caller opts
+ * into, and a slow answer is dropped in favour of the order already computed.
+ */
+test('the default deadline bounds a rerank that never answers', async t => {
+  const asked = { count: 0 };
+  const server = createServer(() => {
+    asked.count += 1;
+    /* holds the request open and never answers */
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => { server.close(() => resolve()); });
+  });
+  const { port } = server.address() as { port: number };
+  const provider = new TypeSafeRerankProvider({ apiKey: 'k'.repeat(20), enabled: true, baseUrl: `http://127.0.0.1:${port}` });
+  const started = Date.now();
+  await assert.rejects(provider.judge(['q'], [{ key: 'c1', text: 'body', source: 'fixture', kind: 'fact' }]));
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 4_000, `an unanswered rerank held the lookup for ${elapsed} ms`);
+  assert.equal(asked.count, 1, 'a judgement is asked once: a retry is a second wait for an answer already given up on');
+  assert.ok(DEFAULT_RERANK_TIMEOUT_MS <= 2_000, 'the default is a deadline, not a courtesy');
 });
