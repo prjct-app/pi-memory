@@ -33,15 +33,58 @@ export interface VectorIndex {
   dispose(): Promise<void>;
 }
 
+/** Query vectors kept per index: a prompt's queries repeat across budget retries and turns. */
+export const QUERY_VECTOR_CACHE = 128;
+
+type QueryWaiter = Readonly<{ text: string; resolve: (vector: number[] | undefined) => void; reject: (error: unknown) => void }>;
+
 export class SqliteVectorIndex implements VectorIndex {
   readonly provider: EmbeddingProvider;
   private readonly projection: ProjectionPort;
   private readonly chunkOptions: ChunkOptions;
+  private readonly queryVectors = new Map<string, Promise<number[] | undefined>>();
+  private readonly queryBatch: { waiting: QueryWaiter[]; scheduled: boolean } = { waiting: [], scheduled: false };
 
   constructor(projection: ProjectionPort, provider: EmbeddingProvider, chunkOptions: ChunkOptions = {}) {
     this.projection = projection;
     this.provider = provider;
     this.chunkOptions = chunkOptions;
+  }
+
+  /**
+   * A prompt searches up to four queries at once, and each used to cost its own
+   * encoder pass, one after another (~58 ms each on the local model, several
+   * per prompt with budget retries). Queries asked in the same tick now share
+   * one pass, and a query already embedded is not embedded again.
+   */
+  private queryVector(text: string): Promise<number[] | undefined> {
+    const cached = this.queryVectors.get(text);
+    if (cached) {
+      this.queryVectors.delete(text);
+      this.queryVectors.set(text, cached);
+      return cached;
+    }
+    const pending = new Promise<number[] | undefined>((resolve, reject) => {
+      this.queryBatch.waiting.push({ text, resolve, reject });
+      if (this.queryBatch.scheduled) return;
+      this.queryBatch.scheduled = true;
+      queueMicrotask(() => this.embedQueries());
+    });
+    // A failure is not remembered: the encoder may only be loading.
+    pending.catch(() => { if (this.queryVectors.get(text) === pending) this.queryVectors.delete(text); });
+    this.queryVectors.set(text, pending);
+    const oldest = [...this.queryVectors.keys()].slice(0, Math.max(0, this.queryVectors.size - QUERY_VECTOR_CACHE));
+    for (const key of oldest) this.queryVectors.delete(key);
+    return pending;
+  }
+
+  private embedQueries(): void {
+    const waiting = this.queryBatch.waiting.splice(0);
+    this.queryBatch.scheduled = false;
+    this.provider.embed(waiting.map(waiter => waiter.text), { inputType: 'query' }).then(
+      vectors => waiting.forEach((waiter, index) => waiter.resolve(vectors[index])),
+      error => waiting.forEach(waiter => waiter.reject(error)),
+    );
   }
 
   async upsert(document: SourceDocument, signal?: AbortSignal): Promise<{ chunks: number; embedded: number }> {
@@ -106,7 +149,9 @@ export class SqliteVectorIndex implements VectorIndex {
 
   async search(query: VectorQuery): Promise<VectorSearchHit[]> {
     const limit = Math.max(1, Math.min(1000, query.limit ?? 20));
-    const [vector] = await this.provider.embed([query.text], { signal: query.signal, inputType: 'query' });
+    query.signal?.throwIfAborted();
+    const vector = await this.queryVector(query.text);
+    query.signal?.throwIfAborted();
     if (!vector) return [];
     const hits = this.projection.vectorSearch(this.provider.model, vector.length, vector, limit);
     const chunks = new Map(this.projection.retrievalChunks(hits.map(hit => hit.chunkId)).map(chunk => [chunk.id, chunk]));

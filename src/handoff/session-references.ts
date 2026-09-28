@@ -91,25 +91,38 @@ const recordOf = (pack: Pack): string => {
   }) });
 };
 
+const once = <T>(make: () => T): (() => T) => {
+  const slot: { made?: { value: T } } = {};
+  return () => (slot.made ??= { value: make() }).value;
+};
+
 /** Build once from raw context; lookup validates branch metadata and only the target body. */
 export const createSessionReferenceResolver = (manager: Manager, raw: readonly unknown[], generation: unknown) => {
   const session = sessionId(manager);
   const branch = branchEntries(manager);
-  const metadata = branch.map(e => `${e.id}:${e.parentId}:${e.type}`).join('|');
-  const source = raw.map(object);
-  const positions = new Map<string, number[]>();
-  source.forEach((m, i) => { if (calls(m).length) {
-    const key = identity(m); positions.set(key, [...(positions.get(key) ?? []), i]);
-  } });
-  const callCounts = counts(source.flatMap(calls).map(c => c.id));
-  const resultCounts = counts(source.filter(m => m.role === 'toolResult').map(m => m.toolCallId));
-  const valid = new Map(packs(manager, branch).filter(pack => {
-    const starts = positions.get(pack.key) ?? [];
-    return starts.length === 1 && pack.messages.every((m, offset) => canonical(core(m)) === canonical(core(source[starts[0]! + offset] ?? {})))
-      && calls(pack.messages[0]!).every(c => callCounts.get(c.id) === 1 && resultCounts.get(c.id) === 1);
-  }).map(pack => [pack.key, pack]));
+  const source = [...raw];
+  // Hashing every tool round of the branch cost ~40 ms on every model request,
+  // growing with the session, and most requests never look a reference up.
+  // The snapshot is taken now; the work happens on the first lookup, if any.
+  const index = once(() => {
+    const metadata = branch.map(e => `${e.id}:${e.parentId}:${e.type}`).join('|');
+    const messages = source.map(object);
+    const positions = new Map<string, number[]>();
+    messages.forEach((m, i) => { if (calls(m).length) {
+      const key = identity(m); positions.set(key, [...(positions.get(key) ?? []), i]);
+    } });
+    const callCounts = counts(messages.flatMap(calls).map(c => c.id));
+    const resultCounts = counts(messages.filter(m => m.role === 'toolResult').map(m => m.toolCallId));
+    const valid = new Map(packs(manager, branch).filter(pack => {
+      const starts = positions.get(pack.key) ?? [];
+      return starts.length === 1 && pack.messages.every((m, offset) => canonical(core(m)) === canonical(core(messages[starts[0]! + offset] ?? {})))
+        && calls(pack.messages[0]!).every(c => callCounts.get(c.id) === 1 && resultCounts.get(c.id) === 1);
+    }).map(pack => [pack.key, pack]));
+    return { metadata, valid };
+  });
   return (current: Manager, currentGeneration: unknown, assistant: unknown): string | undefined => {
     if (currentGeneration !== generation || !session || sessionId(current) !== session) return undefined;
+    const { metadata, valid } = index();
     const found = valid.get(identity(object(assistant)));
     if (!found) return undefined;
     const now = branchEntries(current);

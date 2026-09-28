@@ -164,3 +164,23 @@ test('capacity promotion atomically preserves history, jobs, checkpoints, vector
   await observer.dispose();
   await engine.dispose();
 });
+
+test('a search embeds its queries in one encoder pass, and a query already embedded is not embedded again', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-engine-'));
+  const inner = new TestEmbeddingProvider();
+  const calls: string[][] = [];
+  const provider: EmbeddingProvider = {
+    model: inner.model, isLocal: true,
+    embed: async (texts, options) => { if (options?.inputType === 'query') calls.push([...texts]); return inner.embed(texts); },
+  };
+  const engine = new MemoryEngine({ root, scopeId: 'p_test', sessionId: 's1', provider });
+  t.after(async () => { await engine.dispose(); await rm(root, { recursive: true, force: true }); });
+  await engine.recordFact({ kind: 'decision', statement: 'Use SQLite for durable project storage', entities: [], evidence: [],
+    episodeIds: [], confidence: 0.9, validAt: '2026-01-01T00:00:00.000Z', tags: {} });
+  const first = await engine.search({ queries: ['database persistence', 'storage engine', 'durable data'], dense: true, maxBytes: 4096 });
+  assert.equal(calls.length, 1, `one pass for every query of the search: ${JSON.stringify(calls)}`);
+  assert.deepEqual([...calls[0]!].sort(), ['database persistence', 'durable data', 'storage engine']);
+  const again = await engine.search({ queries: ['database persistence', 'storage engine', 'durable data'], dense: true, maxBytes: 4096 });
+  assert.equal(calls.length, 1, 'the same queries again cost no encoder pass');
+  assert.deepEqual(again.items.map(item => item.id), first.items.map(item => item.id), 'and find the same memory');
+});

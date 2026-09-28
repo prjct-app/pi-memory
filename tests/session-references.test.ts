@@ -149,6 +149,8 @@ test('220-round lookup reads target bodies, not all branch bodies', () => {
   }
   const manager: any = { getSessionId: () => 'large', getBranch: () => entries };
   const resolver = createSessionReferenceResolver(manager, messages, 1);
+  assert.equal(state.reads, 0, 'building the resolver reads no bodies: most requests never look one up');
+  assert.ok(resolver(manager, 1, messages[0]), 'the first lookup indexes the branch once');
   state.reads = 0;
   for (let i = 0; i < 20; i++) assert.ok(resolver(manager, 1, messages[0]));
   assert.ok(state.reads < 500, `target-only content accesses: ${state.reads}`);

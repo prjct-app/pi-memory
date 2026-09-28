@@ -114,6 +114,17 @@ export const collectLegs = async (
   const candidateLimit = Math.max(30, limit * 8);
   const asOf = request.asOf !== undefined ? Date.parse(request.asOf) : Date.now();
   if (!Number.isFinite(asOf)) throw new Error('asOf must be ISO-8601.');
+  // Eligibility depends only on the chunk, the request and asOf, all fixed for
+  // this call. The queries overlap and each budget round re-reads the last
+  // round's hits, so a chunk is judged once instead of up to eight times.
+  const judged = new Map<string, boolean>();
+  const eligibleOf = (ids: readonly string[]): ReadonlySet<string> => {
+    const unknown = ids.filter(id => !judged.has(id));
+    const passed = new Set(unknown.length ? candidatesFromScores(projection, request, new Map(unknown.map(id => [id, 0])), new Map(), 0, asOf, false)
+      .map(candidate => candidate.item.chunkId) : []);
+    for (const id of unknown) judged.set(id, passed.has(id));
+    return new Set(ids.filter(id => judged.get(id)));
+  };
   const collect = async (query: string, budget: number): Promise<{
     exact: LexicalHit[]; lexical: LexicalHit[]; dense: VectorHit[]; gaps: string[];
   }> => {
@@ -126,8 +137,7 @@ export const collectLegs = async (
       return [];
     });
     const ids = [...new Set([...exact, ...lexical, ...dense].map(hit => hit.chunkId))];
-    const eligible = new Set(candidatesFromScores(projection, request, new Map(ids.map(id => [id, 0])), new Map(), 0, asOf, false)
-      .map(candidate => candidate.item.chunkId));
+    const eligible = eligibleOf(ids);
     const needsMore = [exact, lexical, dense].some(hits => hits.length >= budget
       && hits.filter(hit => eligible.has(hit.chunkId)).length < candidateLimit);
     if (needsMore && budget < 1000) return collect(query, Math.min(1000, budget * 2));
