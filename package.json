@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi-native temporal memory and hybrid retrieval for agents.",
   "type": "module",
   "keywords": [
@@ -14,7 +14,8 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/prjct-app/pi-memory/main/docs/cover.png"
   },
   "exports": {
     ".": "./index.ts",
@@ -45,7 +46,7 @@
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
     "@napi-rs/keyring": "1.3.0",
-    "@prjct.app/pi-tui-kit": "file:../pi-tui-kit",
+    "@prjct.app/pi-tui-kit": "^0.3.1",
     "@typesafe-ai/sdk": "0.6.0",
     "sqlite-vec": "0.1.9",
     "tsx": "^4.20.0"

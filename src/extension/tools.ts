@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { inspectSessionReferences, isSessionReference } from '../handoff/session-references.ts';
 import { StringEnum } from '@earendil-works/pi-ai';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { Type } from 'typebox';
+import { Type, type TSchema } from 'typebox';
+import { Compile } from 'typebox/compile';
+import { problemsOf, schemaForModel } from '@prjct.app/pi-tui-kit';
 import type { EvidenceRef } from '../contracts/evidence.ts';
 import { assertEnglishStatement, isEnglish } from '../contracts/language.ts';
 import { factIsValidAt, type MemoryKind, type MemoryStanding } from '../contracts/memory.ts';
@@ -67,6 +69,18 @@ const recordParameters = Type.Object({
   replacementId: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 }, { additionalProperties: false });
 
+const lazyCompile = <T extends TSchema>(schema: T) => {
+  const slot: { compiled?: { Check(value: unknown): boolean; Errors(value: unknown): Iterable<{ instancePath: string; message: string }> } } = {};
+  return () => (slot.compiled ??= Compile(schema));
+};
+const contextValidator = lazyCompile(contextParameters);
+const recordValidator = lazyCompile(recordParameters);
+/** The full schema, limits included, since the model was shown only its shape. */
+const checked = (validator: { Check(value: unknown): boolean; Errors(value: unknown): Iterable<{ instancePath: string; message: string }> }, params: unknown, tool: string): void => {
+  if (validator.Check(params)) return;
+  throw new Error(`Invalid ${tool} arguments: ${problemsOf(validator, params, tool).join('; ')}`);
+};
+
 const normalized = (value: string): string => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
 const compactItem = (value: unknown): unknown => {
   if (!value || typeof value !== 'object') return value;
@@ -118,11 +132,15 @@ const related = (left: string, right: string): boolean => {
   const rightStems = stems(right);
   return [...stems(left)].filter(stem => rightStems.has(stem)).length >= 2;
 };
+const loose = (text: string): string => text.normalize('NFC').replace(/[\u2018\u2019\u201A\u2032`´]/gu, "'")
+  .replace(/[\u201C\u201D\u201E\u2033«»]/gu, '"').replace(/[\u2013\u2014]/gu, '-').replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
 const verifiedQuote = (quote: string | undefined, prompt: string, statement: string): string | undefined => {
   const value = quote?.trim();
   if (!value) return undefined;
   if (value.length < 12 || words(value).size < 3) throw new Error('userQuote must contain at least 12 characters and three content words.');
-  if (!prompt.includes(value)) throw new Error('userQuote must occur exactly in the current user prompt.');
+  // Models re-type quotes: collapsed spaces, straight quotes for curly ones, a
+  // different case. The words must still be the person's, in their order.
+  if (!prompt.includes(value) && !loose(prompt).includes(loose(value))) throw new Error('userQuote must occur in the current user prompt.');
   if (!related(value, statement)) throw new Error('userQuote must be related to the memory statement.');
   return value;
 };
@@ -149,8 +167,10 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
   pi.registerTool({
     name: 'memory_context', label: 'Memory context',
     description: 'Search or inspect bounded project memory; consolidate exact candidates or record positive retrieval feedback.',
-    parameters: contextParameters,
+    // The model reads the shape; the limits are checked here, on every call.
+    parameters: schemaForModel(contextParameters),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      checked(contextValidator(), params, 'memory_context');
       if (params.action === 'inspect' && params.ids?.some(isSessionReference)) {
         if (!params.ids.every(isSessionReference)) throw new Error('Cannot mix session reference IDs and project memory IDs.');
         const details = inspectSessionReferences(ctx.sessionManager, params.ids, params.maxBytes ?? 4096);
@@ -230,8 +250,9 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
   pi.registerTool({
     name: 'memory_record', label: 'Record memory',
     description: 'Record selective durable knowledge or resolve memory using current-session evidence handles or an exact user quote. Write statement and rationale in English whatever language the conversation is in; put the original wording in userQuote, which is kept verbatim as evidence.',
-    parameters: recordParameters,
+    parameters: schemaForModel(recordParameters),
     async execute(_toolCallId, params, signal) {
+      checked(recordValidator(), params, 'memory_record');
       const engine = await runtime.writableEngine();
       if (params.action === 'resolve') {
         const factId = required(params.factId, 'factId');

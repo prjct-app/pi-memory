@@ -1,5 +1,7 @@
 # pi-memory
 
+[![pi-memory — for PI Agent](https://raw.githubusercontent.com/prjct-app/pi-memory/main/docs/cover.png)](https://pi.dev)
+
 Pi-native temporal memory and hybrid retrieval for agents. The extension supplies
 durable evidence, indexing, retrieval, and bounded garbage collection.
 

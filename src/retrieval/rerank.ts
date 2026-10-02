@@ -1,3 +1,4 @@
+import { JEV_MODEL } from '@prjct.app/pi-tui-kit';
 import { chmod, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { noul, TypeSafeClient } from '@typesafe-ai/sdk';
@@ -50,7 +51,7 @@ export type RerankConfig = Readonly<{
 }>;
 
 /** Pinned like pi-qa pins its evaluator: a silent model swap would move every threshold below. */
-export const DEFAULT_RERANK_MODEL = 'jev-1.13.0';
+export const DEFAULT_RERANK_MODEL = JEV_MODEL;
 export const DEFAULT_RERANK_CANDIDATES = 24;
 /**
  * The rerank is an improvement over the fusion, so it may never be the reason a

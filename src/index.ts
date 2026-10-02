@@ -25,7 +25,7 @@ import {
   errorModel, panelDismissed, presentMemoryPanel, resultModel, sourcesModel, statusModel, syncModel,
 } from './extension/panel.ts';
 import { memoryPanelSpec, type MemoryOps } from './extension/memory-panel.ts';
-import { brand, openPanel } from '@prjct.app/pi-tui-kit';
+import { brand, openPanel, repairToolArgs } from '@prjct.app/pi-tui-kit';
 import { ensureEvaluator, evaluatorLine } from './extension/evaluator.ts';
 
 export type MemoryExtensionOptions = Readonly<{
@@ -98,6 +98,7 @@ const syncSources = async (registry: SourceRegistry, sessionId: string, project:
 };
 
 export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions = {}): void => {
+  repairToolArgs(pi);
   const registry = new SourceRegistry();
   const registered = { done: false };
   const running = { now: false };

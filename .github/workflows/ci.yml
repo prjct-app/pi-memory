@@ -21,8 +21,6 @@ jobs:
           node-version: '22.19.0'
           cache: npm
 
-      # The shared TUI kit is a sibling repository, never an npm package.
-      - run: git clone --depth 1 https://github.com/prjct-app/pi-tui-kit ../pi-tui-kit && npm ci --prefix ../pi-tui-kit --ignore-scripts && npm run build --prefix ../pi-tui-kit
       - run: npm ci
 
       - name: Typecheck and immutability gate
