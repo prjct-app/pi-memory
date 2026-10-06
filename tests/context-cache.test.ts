@@ -175,19 +175,12 @@ test('concurrent context waits for pending ownership and cannot replay original 
   assert.match(JSON.stringify(result.messages), /failed safely/);
 });
 
-test('automatic threshold and overflow compaction are canceled without inference; manual is explicit', async () => {
+test('compaction belongs to Pi: automatic, overflow and manual compaction are never cancelled', () => {
   const handlers = new Map<string, (event: any, ctx: any) => any>();
   const engine = async () => undefined;
   const controller = createHandoffController({ engine, budget });
   installHandoffHooks({ on: (name: string, fn: any) => handlers.set(name, fn) } as never, controller, engine);
-  const ctx = context();
-  const compact = handlers.get('session_before_compact')!;
-  assert.deepEqual(await compact({ reason: 'threshold' }, ctx), { cancel: true });
-  assert.deepEqual(await compact({ reason: 'overflow' }, ctx), { cancel: true });
-  assert.equal(await compact({ reason: 'manual' }, ctx), undefined);
-  ctx.ui.notify = () => { throw new Error('UI unavailable'); };
-  controller.clear();
-  assert.deepEqual(await compact({ reason: 'threshold' }, ctx), { cancel: true });
+  assert.equal(handlers.has('session_before_compact'), false);
 });
 
 test('a session clear after activation settles cannot transport an older context into the same session key', async () => {

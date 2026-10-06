@@ -1,6 +1,6 @@
 # Model-switch context handoff
 
-Pi 0.85.1 `context` can replace `AgentMessage[]` before each LLM call. `model_select` fires on set/cycle/restore. This module does **not** start the memory daemon or run hidden analysis. It cancels automatic threshold/overflow compaction before summarizer inference; explicit manual `/compact` remains a paid host operation.
+Pi 0.85.1 `context` can replace `AgentMessage[]` before each LLM call. `model_select` fires on set/cycle/restore. This module does **not** start the memory daemon or run hidden analysis. It never cancels compaction: automatic, overflow and manual `/compact` all belong to Pi.
 
 Provider prompt cache (Anthropic/OpenAI cache keys) is **not** pi-memory. Handoff only rewrites the messages Pi sends; it does not claim to flush provider caches. Cache notices remain ordinary retained messages when their complete turn fits.
 

@@ -62,9 +62,8 @@ export const createHandoffController = (options: {
     pending: Map<string, Promise<void>>;
     windows: Map<string, ReturnType<typeof createContextWindow>>;
     generation: object;
-    compactionNotified: boolean;
   } = { states: new Map(), gates: new Map(), models: new Map(), pending: new Map(),
-    windows: new Map(), generation: {}, compactionNotified: false };
+    windows: new Map(), generation: {} };
   const get = (projectId: string, sessionId: string): HandoffState | undefined => slot.states.get(keyOf(projectId, sessionId));
   const getGate = (workspace: string, sessionId: string): HandoffGate | undefined => slot.gates.get(gateKeyOf(workspace, sessionId));
   const put = (state: HandoffState): void => {
@@ -80,7 +79,6 @@ export const createHandoffController = (options: {
     slot.pending = new Map();
     slot.windows = new Map();
     slot.generation = {};
-    slot.compactionNotified = false;
   };
 
   const observeModel = (workspace: string, sessionId: string, model: Readonly<{ provider: string; id: string }>): void => {
@@ -121,15 +119,6 @@ export const createHandoffController = (options: {
     });
     slot.pending.set(key, task);
     return task;
-  };
-
-  const preventAutomaticCompaction = (reason: string, ctx: ExtensionContext): { cancel: true } | undefined => {
-    if (reason === 'manual') return undefined;
-    if (!slot.compactionNotified) {
-      slot.compactionNotified = true;
-      try { ctx.ui.notify('Automatic paid compaction blocked. Context is bounded locally; /compact remains an explicit paid option.', 'info'); } catch { /* UI must not enable paid inference. */ }
-    }
-    return { cancel: true };
   };
 
   const persist = async (engine: MemoryEngine, sessionId: string, draft: Omit<OperationalCheckpoint, 'projectId' | 'sessionId' | 'updatedAt'>): Promise<OperationalCheckpoint> =>
@@ -218,7 +207,7 @@ export const createHandoffController = (options: {
     }
   };
 
-  return { activate, failClosed, observeModel, clear, persist, safeContext, get, getGate, prepare, preventAutomaticCompaction, budget };
+  return { activate, failClosed, observeModel, clear, persist, safeContext, get, getGate, prepare, budget };
 };
 
 export const installHandoffHooks = (pi: ExtensionAPI, controller: ReturnType<typeof createHandoffController>,
@@ -232,8 +221,6 @@ export const installHandoffHooks = (pi: ExtensionAPI, controller: ReturnType<typ
       try { ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error'); } catch { /* UI only. */ }
     }
   });
-
-  pi.on('session_before_compact', (event, ctx) => controller.preventAutomaticCompaction(event.reason, ctx));
 
   pi.on('context', async (event, ctx) => {
     const result = await controller.safeContext(event.messages as HandoffMessage[], ctx);

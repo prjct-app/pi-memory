@@ -263,8 +263,8 @@ test('public Pi SDK never transports original history after model activation can
   }
 });
 
-test('public Pi SDK cancels automatic compaction before any summary inference and still bounds the request', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'pi-memory-no-paid-compact-'));
+test('public Pi SDK compacts automatically with pi-memory installed: compaction belongs to Pi', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'pi-memory-auto-compact-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const captures: ProviderCapture[] = [];
   const { modelRuntime, modelA } = await createOfflineRuntime(root, captures);
@@ -287,9 +287,7 @@ test('public Pi SDK cancels automatic compaction before any summary inference an
   t.after(() => session.dispose());
   await session.prompt('LATEST_SMALL_REQUIREMENT');
   assert.ok(attempts.includes('threshold'), 'exercise actual host auto-compaction, not just a hook mock');
-  assert.equal(captures.length, 1, 'only the user response, no summarizer inference');
-  assert.match(JSON.stringify(captures[0]?.payload), /LATEST_SMALL_REQUIREMENT/);
-  assert.doesNotMatch(JSON.stringify(captures[0]?.payload), /OLD_COMPACTION_INPUT/);
-  assert.equal(sessionManager.getBranch().some(entry => entry.type === 'compaction'), false);
-  assert.deepEqual(await readdir(join(root, 'home')).catch(() => []), []);
+  assert.equal(sessionManager.getBranch().some(entry => entry.type === 'compaction'), true, 'Pi compacted; nothing cancelled it');
+  assert.match(JSON.stringify(captures.at(-1)?.payload), /LATEST_SMALL_REQUIREMENT/);
+  assert.doesNotMatch(JSON.stringify(captures.at(-1)?.payload), /OLD_COMPACTION_INPUT/);
 });

@@ -30,7 +30,7 @@ test('installs only Pi-native hooks, tools and commands', () => {
   assert.equal(context.promptSnippet, undefined);
   assert.equal(context.promptGuidelines, undefined);
   for (const obsolete of ['scopes', 'dense', 'scoreThreshold']) assert.equal(context.parameters.properties?.[obsolete], undefined);
-  assert.deepEqual(events, ['session_start', 'session_compact', 'session_tree', 'before_agent_start', 'tool_result', 'turn_end', 'model_select', 'session_before_compact', 'context', 'before_provider_request', 'session_shutdown']);
+  assert.deepEqual(events, ['session_start', 'session_compact', 'session_tree', 'before_agent_start', 'tool_result', 'turn_end', 'model_select', 'context', 'before_provider_request', 'session_shutdown']);
 });
 
 test('explicit public handoff budget reaches the controller', () => {
