@@ -1,3 +1,4 @@
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
 import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CurationBlockError } from '../curation/types.ts';
@@ -24,9 +25,9 @@ export const createSdkAnswerProvider = async (options: Readonly<{
       const maxTokens = Math.min(2048, Math.max(128, Math.ceil(maxOutputChars / 4)));
       const message = await runtime.completeSimple(model, {
         systemPrompt: SYSTEM,
-        messages: [{ role: 'user', content: JSON.stringify({
+        messages: [{ role: 'user', content: JSON.stringify(await protectOutboundData({
           condition: request.condition, query: request.query, evidence: request.evidence, priorFacts: request.priorFacts,
-        }), timestamp: Date.now() }],
+        })), timestamp: Date.now() }],
       }, { maxTokens, ...(signal === undefined ? {} : { signal }) });
       if (message.stopReason === 'error' || message.stopReason === 'aborted') {
         return { text: '', inputTokens: message.usage?.input ?? 0, outputTokens: message.usage?.output ?? 0, failed: true };

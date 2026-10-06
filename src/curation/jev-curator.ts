@@ -1,3 +1,4 @@
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
 import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { isEnglish } from '../contracts/language.ts';
@@ -158,7 +159,7 @@ export const createSdkWriter = async (options: Readonly<{ provider: string; mode
     if (!request.messages.length && !request.rules.length) return { adds: [], rewrites: [] };
     const message = await runtime.completeSimple(model, {
       systemPrompt: WRITER_SYSTEM,
-      messages: [{ role: 'user', content: JSON.stringify(request), timestamp: Date.now() }],
+      messages: [{ role: 'user', content: JSON.stringify(await protectOutboundData(request)), timestamp: Date.now() }],
     }, { maxTokens: 2048, reasoning: 'minimal', ...(signal === undefined ? {} : { signal }) });
     if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error(message.errorMessage || `Writer ${message.stopReason}.`);
     const value = extractJsonObject(textOf(message)) as Partial<WriteResult>;
