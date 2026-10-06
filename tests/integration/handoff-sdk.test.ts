@@ -166,7 +166,10 @@ test('public Pi SDK sends bounded provider contexts across A→B→A and a multi
     const totalTokens = estimateTokens({ role: 'user', content: request.context.systemPrompt } as never) + 1_000
       + request.context.messages.reduce((sum, message) => sum + estimateTokens(message as never), 0);
     assert.ok(totalTokens <= 12_000);
-    assert.ok(request.context.messages.length <= 6);
+    // Pi 1.0.4 normalizes provider instructions/tools into system transcript items.
+    // The handoff message budget bounds conversation messages, not SDK metadata.
+    assert.ok(request.context.messages.filter(message => message.role !== 'system').length <= 6);
+    assert.match(JSON.stringify(request.context), /SDK_SYSTEM_POLICY/);
   }
   const toolLoop = JSON.stringify(bRequests[1]!.context.messages);
   const toolLoopPayload = JSON.stringify(bRequests[1]!.payload);
