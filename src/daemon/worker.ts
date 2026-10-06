@@ -11,11 +11,9 @@ import { memoryDatabasePath, trustedProjectIds } from '../workspace/project-iden
 import { memoryProjectBindings, registeredMemoryProjectIds } from '../workspace/memory-registry.ts';
 import { daemonStateDir, type DaemonConfig } from './config.ts';
 import { GlobalBudgetLedger } from './budget.ts';
-import { applyMaintenance, factJudgeFrom, planMaintenance, runHygiene, type FactJudge, type MaintenanceOptions } from '../retention/maintenance.ts';
+import { applyMaintenance, planMaintenance, runHygiene, type MaintenanceOptions } from '../retention/maintenance.ts';
 import { backfillProject, createSdkCurator, curateProject, readUserMessages, sessionsDirFor, type Curator } from '../curation/curator.ts';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
-import { createJevCurator, createSdkWriter, type Ask } from '../curation/jev-curator.ts';
-import { createRerankProvider, readRerankConfig } from '../retrieval/rerank.ts';
 
 export type CycleReport = Readonly<{
   scopes: number;
@@ -83,57 +81,10 @@ const enqueueDueReviews = (engine: MemoryEngine, adapterId: string, now: number,
   return added.n;
 };
 
-/**
- * Ingestion brings new documents in; this puts the existing ones in order.
- * It runs after processing so a duplicate published in the same cycle is
- * already visible, and it never takes the cycle down: memory that could not be
- * tidied is still memory that works.
- */
-/**
- * Jev already judges whether a passage tries to instruct rather than state
- * something, which is the axis reclassification needs. Resolved per cycle and
- * never required: no credential means the pass still consolidates and collects,
- * it just does not reclassify.
- */
-/** Jev over the global TypeSafe credential, or nothing when there is no key. */
-const jevAsk = async (): Promise<Ask | undefined> => {
-  try {
-    const [{ resolveKey }, { openSecretStore }] = await Promise.all([
-      import('@prjct.app/pi-tui-kit'), import('../security/credentials.ts')]);
-    const resolved = await resolveKey(await openSecretStore());
-    if (!resolved.key) return undefined;
-    const provider = createRerankProvider({ enabled: true, apiKey: resolved.key, timeoutMs: 60_000 });
-    return provider?.ask ? (state, questions, signal) => provider.ask!(state, questions, signal ? { signal } : {}) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-/**
- * Judgement goes to Jev and only writing to the session model when a TypeSafe
- * key exists; otherwise the session model does both in one batched call.
- */
+/** Curation uses the configured session model through Pi's public SDK. */
 export const resolveCurator = async (config: DaemonConfig): Promise<Curator | undefined> => {
   if (!config.provider || !config.model) return undefined;
-  const target = { provider: config.provider, model: config.model };
-  const ask = await jevAsk();
-  const write = ask ? await createSdkWriter(target).catch(() => undefined) : undefined;
-  if (ask && write) return createJevCurator({ ...target, ask, write });
-  return createSdkCurator(target).catch(() => undefined);
-};
-
-const judgeFor = async (engine: MemoryEngine): Promise<FactJudge | undefined> => {
-  try {
-    const [{ resolveKey }, { openSecretStore }] = await Promise.all([
-      import('@prjct.app/pi-tui-kit'), import('../security/credentials.ts')]);
-    const resolved = await resolveKey(await openSecretStore());
-    if (!resolved.key) return undefined;
-    const config = await readRerankConfig(engine.root);
-    const provider = createRerankProvider({ ...config, enabled: config.enabled ?? true, apiKey: resolved.key });
-    return provider ? factJudgeFrom(provider) : undefined;
-  } catch {
-    return undefined;
-  }
+  return createSdkCurator({ provider: config.provider, model: config.model }).catch(() => undefined);
 };
 
 const maintainProject = async (engine: MemoryEngine, options: CycleOptions, totals: {
@@ -144,10 +95,9 @@ const maintainProject = async (engine: MemoryEngine, options: CycleOptions, tota
   if (!options.maintenance && !options.config.maintenance) return;
   const settings = options.maintenance === true || !options.maintenance ? {} : options.maintenance;
   try {
-    const judge = settings.judge ?? await judgeFor(engine);
     const plan = await planMaintenance(engine, {
       embed: texts => engine.embeddings.embed(texts, { inputType: 'passage' }),
-      ...(judge ? { judge } : {}), ...settings,
+      ...settings,
     });
     const applied = await applyMaintenance(engine, plan, {
       ...(settings.maxActions ? { maxActions: settings.maxActions } : {}),
@@ -207,7 +157,7 @@ export const runCycle = async (options: CycleOptions): Promise<CycleReport> => {
   const processOne = async (engine: MemoryEngine): Promise<void> => {
     try {
       // A session-close run only curates. A full run learns from sessions it has
-      // not read yet through Jev + one write per project; the old path spent one
+      // not read yet through the configured Pi model; the old path spent one
       // generative call per session document (31 min for 9 projects) and
       // re-extracted facts it already had on every cycle.
       if (!options.config.projectId) {

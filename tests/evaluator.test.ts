@@ -32,7 +32,7 @@ const counting = () => {
 
 const root = async (name: string): Promise<string> => mkdtemp(join(tmpdir(), `pi-memory-${name}-`));
 
-test('a key already in the keyring is never asked for again', async t => {
+test('a shared key is not asked for again and does not enable reranking', async t => {
   const dir = await root('eval-have-key');
   t.after(async () => { await rm(dir, { recursive: true, force: true }); });
   const store = memoryStore();
@@ -42,8 +42,8 @@ test('a key already in the keyring is never asked for again', async t => {
   assert.equal(asked.calls(), 0);
   assert.equal(found.prompted, false);
   assert.equal(found.resolved.state, 'usable');
-  assert.equal(found.enabled, true);
-  assert.equal((await readRerankConfig(dir)).enabled, true);
+  assert.equal(found.enabled, false);
+  assert.equal((await readRerankConfig(dir)).enabled, false);
 });
 
 test('a broken or unreachable key is reported, not silently replaced', async t => {
@@ -106,7 +106,7 @@ test('the project configuration is never a place the key can live', async t => {
   const store = memoryStore();
   await saveKey(store, 'typesafe-test-key-12345', true);
   await ensureEvaluator(tui, dir, { store });
-  const written = await readFile(join(dir, 'config.json'), 'utf8');
+  const written = await readFile(join(dir, 'config.json'), 'utf8').catch(() => '');
   assert.equal(written.includes('typesafe-test-key-12345'), false);
   // The config type has no apiKey field at all, so the check is that nothing
   // put one there anyway.

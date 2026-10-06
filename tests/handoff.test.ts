@@ -184,11 +184,15 @@ test('truncation drops oversized images and caps large tool-call arguments befor
 
 test('the budget follows the active model context window instead of a fixed 16k cap', () => {
   assert.deepEqual(budgetForModel(undefined), DEFAULT_HANDOFF_BUDGET);
-  assert.deepEqual(budgetForModel({ contextWindow: 8_000, maxTokens: 4_000 }), DEFAULT_HANDOFF_BUDGET);
+  const small = budgetForModel({ contextWindow: 8_000, maxTokens: 4_000 });
+  assert.equal(small.maxTokens, 6_000, 'a usable small model must never receive the 16k fallback');
+  assert.ok(small.maxBytes < DEFAULT_HANDOFF_BUDGET.maxBytes);
+  assert.equal(small.maxMessages, Number.MAX_SAFE_INTEGER, 'the token budget, not the number of turns, bounds context');
+  for (const contextWindow of [0, -1, NaN, Infinity, 0.5]) assert.deepEqual(budgetForModel({ contextWindow }), DEFAULT_HANDOFF_BUDGET);
   const sol = budgetForModel({ contextWindow: 272_000, maxTokens: 128_000 });
   assert.equal(sol.maxTokens, 272_000 - 32_768);
   assert.ok(sol.maxBytes >= sol.maxTokens * 4);
-  assert.ok(sol.maxMessages >= 1_000);
+  assert.ok(sol.maxMessages > DEFAULT_HANDOFF_BUDGET.maxMessages);
   // Two ~55KB reads in one round: aborted under 16k, whole under a 272k model budget.
   const doc = (word: string) => Array.from({ length: 700 }, (_, index) => index === 350
     ? `line 0351: THE CODE WORD IS ${word}` : `line ${index}: lorem ipsum dolor sit amet consectetur adipiscing elit sed do`).join('\n');
@@ -213,6 +217,19 @@ test('an unconfigured controller derives its ceiling from ctx.model', async () =
   }) as never;
   const result = await controller.safeContext(messages, ctx({ contextWindow: 272_000, maxTokens: 128_000 }));
   assert.equal(result.messages.at(-1), big);
+});
+
+test('a long session keeps early constraints and short tool results while they fit the model', () => {
+  const messages = [user('Keep the existing API contract: tenant IDs are strings.'),
+    ...Array.from({ length: 600 }, (_, index) => [
+      assistant('read', [`read-${index}`]), tool(`read-${index}`, `Verified module ${index}; keep its public interface.`),
+    ]).flat(), user('Continue implementing the original request.')];
+  const selected = selectHandoffMessages(messages, undefined, budgetForModel({ contextWindow: 272_000, maxTokens: 128_000 }));
+  assert.equal(selected.ok, true);
+  if (selected.ok) {
+    assert.deepEqual(selected.messages, messages);
+    assert.equal(selected.truncatedFields, 0);
+  }
 });
 
 test('the newest tool round remains atomic and refuses when even truncation cannot fit', () => {

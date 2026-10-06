@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { keyHasValidShape, openSecretPrompt, resolveKey, saveKey, type ResolvedKey, type SecretPromptSpec, type SecretStore } from '@prjct.app/pi-tui-kit';
 import { openSecretStore } from '../security/credentials.ts';
-import { DEFAULT_RERANK_MODEL, setRerankEnabled, TypeSafeRerankProvider } from '../retrieval/rerank.ts';
+import { DEFAULT_RERANK_MODEL, readRerankConfig, setRerankEnabled, TypeSafeRerankProvider } from '../retrieval/rerank.ts';
 
 /** A line for the init/status card. Carries the fingerprint, never the key. */
 export const evaluatorLine = (resolved: ResolvedKey, enabled: boolean): string => {
@@ -46,7 +46,7 @@ export const ensureEvaluator = async (
   const resolved = await resolveKey(store);
   const interactive = ctx.mode === 'tui' && ctx.hasUI;
   if (!options.force && resolved.state !== 'missing') {
-    const enabled = resolved.state === 'usable' && await enable(root, true);
+    const enabled = resolved.state === 'usable' && (await readRerankConfig(root)).enabled === true;
     return { resolved, enabled, prompted: false };
   }
   if (!interactive) return { resolved, enabled: false, prompted: false };

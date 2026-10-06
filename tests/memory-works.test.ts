@@ -8,7 +8,7 @@ import { gitRoot, installMemoryHooks } from '../src/extension/hooks.ts';
 import { installMemoryTools } from '../src/extension/tools.ts';
 import { sessionFailureStatement } from '../src/sources/session-log.ts';
 import { resolveMemoryProject } from '../src/workspace/memory-registry.ts';
-import { scriptedTranslator, type Translator } from '../src/curation/translator.ts';
+import type { Translator } from '../src/curation/translator.ts';
 import { TestEmbeddingProvider } from './helpers.ts';
 
 process.env.PI_MEMORY_OFFLINE = '1';
@@ -109,62 +109,39 @@ test('a remember declaration initializes repository memory; a tool failure alone
   assert.match(JSON.stringify(found.details.items), /never publish releases/);
 });
 
-test('a declaration in another language is stored translated, quoting what was actually said', async t => {
+test('a declaration keeps the original language even with a legacy translator configured', async t => {
   const spoken = 'recuerda que nunca publicamos releases sin avisar';
-  const english = 'Never publish releases without warning first.';
-  const declaring = await harness(t, { git: true, translator: scriptedTranslator({ [spoken]: english }) });
+  const declaring = await harness(t, { git: true, translator: { provider: 'unused', model: 'unused', toEnglish: async () => { throw new Error('Do not translate user instructions'); } } });
   await declaring.handlers.get('before_agent_start')!({ prompt: spoken, systemPrompt: 'base' }, declaring.ctx);
   await declaring.handlers.get('turn_end')!({}, declaring.ctx);
   await declaring.runtime.flushed();
   const engine = await declaring.runtime.engine();
-  const fact = engine.projection.activeFacts(engine.scopeId, 20).find(item => item.statement === english);
-  assert.ok(fact, 'the shortcut stored the translation, not the original words');
+  const fact = engine.projection.activeFacts(engine.scopeId, 20).find(item => item.statement === spoken);
+  assert.ok(fact);
   assert.equal(fact.evidence[0]?.provenance, 'declared');
-  assert.equal(fact.evidence[0]?.excerpt, spoken, 'evidence quotes what was actually said');
+  assert.equal(fact.evidence[0]?.excerpt, spoken);
 });
 
-test('a declaration is not stored untranslated when no model can be reached', async t => {
+test('an offline declaration is stored without needing a translation model', async t => {
   const declaring = await harness(t, { git: true });
-  await declaring.handlers.get('before_agent_start')!({ prompt: 'recuerda que nunca publicamos releases sin avisar', systemPrompt: 'base' }, declaring.ctx);
+  const spoken = 'recuerda que nunca publicamos releases sin avisar';
+  await declaring.handlers.get('before_agent_start')!({ prompt: spoken, systemPrompt: 'base' }, declaring.ctx);
   await declaring.handlers.get('turn_end')!({}, declaring.ctx);
   await declaring.runtime.flushed();
-  const engine = await declaring.runtime.engine().catch(() => undefined);
-  const facts = engine?.projection.activeFacts(engine.scopeId, 20) ?? [];
-  assert.equal(facts.some(fact => /nunca publicamos/u.test(fact.statement)), false);
+  const engine = await declaring.runtime.engine();
+  assert.ok(engine.projection.activeFacts(engine.scopeId, 20).some(fact => fact.statement === spoken));
 });
 
-test('a memory written in another language is translated on the way in', async t => {
-  const spoken = 'El daemon nunca se inicia solo, hay que configurarlo antes de que sincronice.';
-  const english = 'The daemon never starts on its own; configure it before it can sync.';
-  const h = await harness(t, { git: true, translator: scriptedTranslator({ [spoken]: english }) });
-  const recorded = await h.tools.get('memory_record').execute('es', {
-    action: 'remember', kind: 'decision', statement: spoken,
-  });
+for (const statement of [
+  'El daemon nunca se inicia solo, hay que configurarlo antes de que sincronice.',
+  'Le daemon ne demarre jamais tout seul, il faut le configurer avant.',
+  'The daemon never starts on its own; configure it before it can sync.',
+]) test(`memory_record preserves authored text offline: ${statement}`, async t => {
+  const h = await harness(t, { git: true });
+  const recorded = await h.tools.get('memory_record').execute('original', { action: 'remember', kind: 'decision', statement });
   assert.equal(recorded.details.status, 'ok');
   const engine = await h.runtime.engine();
-  const facts = engine.projection.activeFacts(engine.scopeId, 20);
-  assert.equal(facts.some(fact => fact.statement === english), true, 'the English translation is what is stored');
-  assert.equal(facts.some(fact => /El daemon nunca/u.test(fact.statement)), false);
-});
-
-test('with no model to translate with, the memory is refused rather than stored in another language', async t => {
-  const h = await harness(t, { git: true });
-  await assert.rejects(h.tools.get('memory_record').execute('es', {
-    action: 'remember', kind: 'decision',
-    statement: 'El daemon nunca se inicia solo, hay que configurarlo antes de que sincronice.',
-  }), error => {
-    assert.match((error as Error).message, /must be written in English/u);
-    assert.match((error as Error).message, /userQuote/u);
-    return true;
-  });
-});
-
-test('a translation that is itself not English is rejected instead of trusted', async t => {
-  const spoken = 'El daemon nunca se inicia solo, hay que configurarlo antes de que sincronice.';
-  const h = await harness(t, { git: true, translator: scriptedTranslator({ [spoken]: 'Le daemon ne demarre jamais tout seul, il faut le configurer avant.' }) });
-  await assert.rejects(h.tools.get('memory_record').execute('es', {
-    action: 'remember', kind: 'decision', statement: spoken,
-  }), /must be written in English/u);
+  assert.ok(engine.projection.activeFacts(engine.scopeId, 20).some(fact => fact.statement === statement));
 });
 
 test('a Spanish conversation still produces an English memory with the original words as evidence', async t => {

@@ -57,7 +57,7 @@ test('the whole shortlist is judged in exactly one request, never one per candid
   assert.equal(reranker.batches().length, 1);
   assert.ok(reranker.batches()[0]! > 1, 'the single request carried the whole shortlist');
   assert.ok(found.items.length > 0);
-  assert.ok(found.items.every(item => item.reason.includes('rerank')));
+  assert.ok(found.items.every(item => item.reason.includes('rerank (advisory)')));
 });
 
 test('a reranker that throws leaves the fused order intact and reports a gap', async t => {
@@ -82,7 +82,7 @@ test('a timed-out reranker is reported as a timeout, not as a leaked stack', asy
   assert.ok(found.gaps.some(gap => /timed out/u.test(gap)));
 });
 
-test('a passage that tries to instruct the reader never reaches the answer', async t => {
+test('a classifier warning cannot hide source evidence from the active model', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-memory-rerank-injection-'));
   const project = await open(home);
   t.after(async () => { await project.dispose(); await rm(home, { recursive: true, force: true }); });
@@ -92,18 +92,19 @@ test('a passage that tries to instruct the reader never reaches the answer', asy
     ? { relevant: 0.95, evidence: 0.95, instruction: 0.99 }
     : relevant);
   const found = await federatedSearch([project], { queries: ['SQLite storage'], dense: false }, { rerank: reranker });
-  assert.equal(found.items.some(item => /ignore your instructions/u.test(item.statement)), false);
+  assert.equal(found.items.some(item => /ignore your instructions/u.test(item.statement)), true);
   assert.ok(found.items.some(item => /one database per project/u.test(item.statement)));
 });
 
-test('a topical shortlist that answers nothing abstains instead of ranking it', async t => {
+test('weak classifier evidence retains candidates for the active model', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-memory-rerank-abstain-'));
   const project = await corpus(home);
   t.after(async () => { await project.dispose(); await rm(home, { recursive: true, force: true }); });
   const reranker = scriptedReranker(() => ({ relevant: 0.9, evidence: 0.1, instruction: 0.01 }));
   const found = await federatedSearch([project], { queries: ['SQLite storage'], dense: false }, { rerank: reranker });
-  assert.equal(found.status, 'abstained');
-  assert.ok(found.gaps.some(gap => /answers the query/u.test(gap)));
+  assert.equal(found.status, 'partial');
+  assert.ok(found.items.length > 0);
+  assert.ok(found.gaps.some(gap => /candidates retained/u.test(gap)));
 });
 
 test('a query may opt out of reranking without unconfiguring it', async t => {
@@ -154,3 +155,18 @@ test('the request sends each query and rubric once and every candidate exactly o
   assert.equal(serialized.split('satisfies rubric').length - 1, 0);
   assert.ok(JSON.stringify(questions).includes('satisfies rubric.relevant'));
 });
+
+for (const judgement of [{ relevant: 0, evidence: 0, instruction: 1 }, undefined]) {
+  test(`a ${judgement ? 'false negative' : 'missing judgement'} cannot empty retrieved memory`, async t => {
+    const home = await mkdtemp(join(tmpdir(), 'pi-memory-rerank-retained-'));
+    const project = await corpus(home);
+    t.after(async () => { await project.dispose(); await rm(home, { recursive: true, force: true }); });
+    const request = { queries: ['SQLite storage'], dense: false };
+    const baseline = await federatedSearch([project], request);
+    const rerank: RerankProvider = { model: 'fixture', judge: async (_queries, candidates) =>
+      new Map(judgement ? candidates.map(candidate => [candidate.key, judgement]) : []) };
+    const result = await federatedSearch([project], request, { rerank });
+    assert.ok(baseline.items.length > 0);
+    assert.deepEqual(new Set(result.items.map(item => item.id)), new Set(baseline.items.map(item => item.id)));
+  });
+}

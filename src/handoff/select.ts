@@ -36,15 +36,16 @@ export const DEFAULT_HANDOFF_BUDGET: HandoffBudget = {
  */
 export const budgetForModel = (model: Readonly<{ contextWindow?: number; maxTokens?: number }> | undefined): HandoffBudget => {
   const window = model?.contextWindow;
-  if (!window || !Number.isSafeInteger(window) || window <= DEFAULT_HANDOFF_BUDGET.maxTokens) return DEFAULT_HANDOFF_BUDGET;
+  if (!window || !Number.isSafeInteger(window) || window < 1) return DEFAULT_HANDOFF_BUDGET;
   const output = model.maxTokens && Number.isSafeInteger(model.maxTokens) && model.maxTokens > 0 ? model.maxTokens : 16_384;
   const reserve = Math.min(Math.max(16_384, Math.min(output, 32_768)), Math.floor(window / 4));
-  const maxTokens = Math.max(DEFAULT_HANDOFF_BUDGET.maxTokens, window - reserve);
+  const maxTokens = window - reserve;
   return {
     maxTokens,
     // Signed reasoning and JSON escaping make bytes outgrow chars/4 estimates.
-    maxBytes: Math.max(DEFAULT_HANDOFF_BUDGET.maxBytes, maxTokens * 16),
-    maxMessages: 4_096,
+    maxBytes: Math.min(Number.MAX_SAFE_INTEGER, maxTokens * 16),
+    // Short tool rounds must not evict context that still fits the model.
+    maxMessages: Number.MAX_SAFE_INTEGER,
     toolSchemaReserveTokens: DEFAULT_HANDOFF_BUDGET.toolSchemaReserveTokens,
   };
 };

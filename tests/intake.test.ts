@@ -40,7 +40,7 @@ test('without Jev, or when it fails, nothing auto-derived is stored', async () =
   assert.deepEqual((await judgeAutoCaptures(['A real lesson about pnpm install and the lockfile.'], failing)).map(v => v.reason), ['Jev unavailable']);
 });
 
-test('a session failure Jev calls one run\'s state never reaches memory; a lesson does', async t => {
+test('automatic failure observations do not ask Jev or promote unreviewed rules', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-memory-intake-'));
   const cwd = join(home, 'work');
   await mkdir(cwd, { recursive: true });
@@ -61,6 +61,6 @@ test('a session failure Jev calls one run\'s state never reaches memory; a lesso
   const engine = await runtime.engine();
   const failures = engine.projection.activeFacts(engine.scopeId, 20).filter(fact => fact.kind === 'failure').map(fact => fact.statement);
   assert.ok(!failures.some(text => /Vitest 4/.test(text)), `one run's state was stored: ${failures.join(' | ')}`);
-  assert.equal(jev.asked.length, 1, 'the batch is judged in one request');
-  assert.ok(failures.some(text => /pnpm/.test(text)), `the lesson was dropped: ${failures.join(' | ')}`);
+  assert.equal(jev.asked.length, 0, 'automatic hooks do not call a classifier');
+  assert.deepEqual(failures, [], 'the active model owns promotion to durable memory');
 });

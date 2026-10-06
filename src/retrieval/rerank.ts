@@ -207,10 +207,8 @@ export const readRerankConfig = async (root: string): Promise<Omit<RerankConfig,
   const rerank = parsed.rerank ?? {};
   const override = process.env.PI_MEMORY_RERANK;
   return {
-    // Tri-estado a proposito: `undefined` es "el proyecto no ha dicho nada", y solo
-    // quien ya resolvio la credencial puede convertir eso en un si. Sin clave nunca
-    // se enciende, asi que un proyecto sin credencial no paga gaps ni llamadas.
-    enabled: override === '1' ? true : override === '0' ? false : rerank.enabled,
+    // Credentials are shared across extensions; activation belongs to this project.
+    enabled: override === '1' ? true : override === '0' ? false : rerank.enabled === true,
     model: process.env.PI_MEMORY_RERANK_MODEL ?? rerank.model ?? DEFAULT_RERANK_MODEL,
     ...(rerank.baseUrl ? { baseUrl: rerank.baseUrl } : {}),
     timeoutMs: Math.max(1_000, Math.min(60_000, rerank.timeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS)),

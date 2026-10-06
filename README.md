@@ -47,8 +47,7 @@ results. A failed tool result carries its staged evidence handle so the agent
 can cite it with `memory_record`; successful results are left untouched.
 Exact, secret-free user declarations beginning with `remember`, `recuerda`, or
 `acuérdate` are also stored directly as supported lexical procedures after the
-turn, translated into English when they are not already — see
-[stored memory is English only](#stored-memory-is-english-only); corrections
+turn, preserving their original wording and language; corrections
 follow the same declared-evidence path. Memory's own tools
 are excluded to prevent self-citation. The agent cannot mint native provenance.
 An explicit user statement is accepted only when `userQuote` occurs verbatim in
@@ -58,36 +57,16 @@ The agent should remember decisions, corrections, stable constraints,
 preferences, verified failures, and reusable procedures—not routine reads,
 progress narration, secrets, or generic summaries.
 
-### Stored memory is English only
+### Preserve the original language
 
-A memory is fresh instruction for whatever model reads it next, and every
-`statement` is injected into the `<project_memory>` block of every system
-prompt. One written in another language is therefore carried, and re-translated
-by the reading model, on every turn.
+User declarations, `memory_record` statements and rationales are stored in their
+original language. Storage never depends on an auxiliary translation call.
+Analysis and curation preserve meaning, qualifications and unresolved conflicts;
+a different language alone is no reason to reject or rewrite a rule.
 
-So a statement in another language is **translated once on the way in**, not
-refused. This happens wherever memory is written: `memory_record`, the
-`remember` / `recuerda` / `acuérdate` shortcut, and the daemon analyzer's
-output. Translation uses the model already in use by the session, or the
-analyzer's own model in the daemon — nothing extra to configure.
-
-Evidence is the exception and is never rewritten. A `userQuote` must still occur
-verbatim in the prompt, and an excerpt still has to be a literal citation of its
-source: translating either would make the provenance a lie. So a Spanish
-conversation produces an English memory backed by the Spanish words that caused
-it, and recall still works from a Spanish prompt because the reading model
-matches across languages. Quote-to-statement relatedness is checked on
-accent-stripped stems for the same reason, since a quote and the memory it
-supports are now routinely in different languages.
-
-Memory identity stays keyed on what was actually said, never on the translation,
-because translation is not deterministic and the same declaration must not land
-twice under two wordings.
-
-If no model can be reached, nothing is stored in the other language: a
-`memory_record` call is refused with an explanation, and the shortcut leaves the
-declaration as a session observation for the daemon. Storing another language is
-the one outcome that never happens.
+Evidence remains verbatim. A `userQuote` must occur in the current prompt, and
+an excerpt must cite its source. These grounding checks apply in every language.
+Memory identity remains keyed on what was actually said.
 
 In a repository with memory, every request carries a `<project_memory>` block in
 the system prompt: active memories ordered by kind (corrections, constraints,
@@ -132,34 +111,32 @@ npm run daemon -- stop
 
 ## Optional semantic reranking
 
-Memory works without it. When a project turns it on and a TypeSafe key exists,
-`memory_context` adds one stage between rank fusion and the answer: the whole
-shortlist goes to Jev in a **single** request that asks, per candidate, whether
-it addresses the query, whether it states something usable in an answer, and
-whether it is trying to instruct the reader. Candidates that try to instruct are
-dropped, the rest are ordered by a calibrated probability instead of a fusion
-score, and a shortlist where nothing answers anything abstains.
-
-One request, not one per candidate. Jev bills the state once however many
-questions ride on it, so a call per query/candidate pair would pay for the same
-queries and the same rubric once per candidate to get the same answers.
-
-`/memory init` offers the key when none is stored anywhere; `/memory setup` sets
-or rotates it. **A key that already exists is never asked for again** — the
-credential is global, so a key saved by another prjct extension is this one's
-key too. Declining the prompt leaves a fully working project with the stage off.
-The key lives in the OS keyring (`ai.typesafe` / `api-key`), never in a file;
-`TYPESAFE_API_KEY` overrides it for one process and is not copied into it. The
-project's `config.json` holds only non-secret tuning:
+Memory works without a classifier. Reranking requires an explicit project
+`config.json` setting and a TypeSafe key; a shared credential alone never enables
+it, and `/memory init` preserves a previous opt-out.
 
 ```json
 { "rerank": { "enabled": true, "model": "jev-1.13.0", "candidates": 24, "timeoutMs": 15000 } }
 ```
 
-The stage never runs in the automatic per-turn hook, which stays lexical and
-offline. `PI_MEMORY_OFFLINE=1` disables it, `PI_MEMORY_RERANK=0` turns it off
-for a run, and any failure — missing key, timeout, rejected credential — logs a
-gap and returns the fused order unchanged.
+When enabled, `memory_context` may ask Jev to order its shortlist. Scores are
+advisory: low relevance, weak evidence, missing judgements, or instruction flags
+never delete candidates. The active Pi model assesses their meaning and validity.
+Missing credentials, timeout, and offline mode preserve the fused order.
+`PI_MEMORY_RERANK=0` disables this stage; `PI_MEMORY_OFFLINE=1` prevents network use.
+The key stays in the OS keyring, never in project configuration.
+
+Automatic hooks do not ask Jev to remove turns or promote tool failures into
+rules. Observations remain available as evidence; the active model can record a
+verified lesson explicitly. Configured daemon curation uses its Pi model through
+the public SDK. Session-close curation requires `PI_MEMORY_CURATE_ON_CLOSE=1`.
+
+## Long sessions
+
+Pi owns normal compaction. Observation masking and history retirement are off by
+default. The fallback context ceiling follows the actual model window and output
+reserve, without an arbitrary message-count cap. A newer rule snapshot does not
+declare earlier retrieved evidence obsolete.
 
 ## Sources
 

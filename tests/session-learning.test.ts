@@ -13,7 +13,6 @@ import {
   sessionObservationWorthy,
 } from '../src/sources/session-log.ts';
 import { MemoryEngine } from '../src/engine.ts';
-import { scriptedTranslator } from '../src/curation/translator.ts';
 import { TestEmbeddingProvider } from './helpers.ts';
 
 const ctx = (cwd: string, sessionId = 's1', mode = 'tui') => ({
@@ -218,35 +217,31 @@ test('an explicit recuerda declaration is supported and recalled by the next ses
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-session'));
 });
 
-test('a recuerda declaration is stored in English and recalled by the next session', async t => {
+test('a recuerda declaration retains its language across sessions without translation', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-session-remember-es-'));
   const cwd = join(home, 'work');
   await mkdir(cwd, { recursive: true });
   t.after(() => rm(home, { recursive: true, force: true }));
   const spoken = 'Recuerda usar Zod para validar los límites de la API.';
-  const english = 'Use Zod to validate the API boundaries.';
   const handlers = new Map<string, (event: any, context: any) => Promise<any>>();
   const pi = { on(name: string, handler: any) { handlers.set(name, handler); } } as unknown as ExtensionAPI;
-  const runtime = installMemoryHooks(pi, { home, translator: scriptedTranslator({ [spoken]: english }) });
+  const runtime = installMemoryHooks(pi, { home });
   await handlers.get('session_start')!({}, ctx(cwd, 'remember-es'));
   await runtime.initialize();
   await handlers.get('before_agent_start')!({ prompt: spoken, systemPrompt: 'Base' }, ctx(cwd, 'remember-es'));
   await handlers.get('turn_end')!({}, ctx(cwd, 'remember-es'));
   await runtime.flushed();
   const project = await runtime.engine();
-  const fact = project.projection.activeFacts(project.scopeId, 20).find(item => item.statement === english);
-  assert.ok(fact, 'the declaration was translated on the way in');
+  const fact = project.projection.activeFacts(project.scopeId, 20).find(item => item.statement === spoken);
+  assert.ok(fact, 'the declaration was stored verbatim');
   assert.equal(fact.standing, 'supported');
   assert.equal(fact.evidence[0]?.excerpt, spoken, 'the Spanish words remain the evidence');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'remember-es'));
-  // Recalled from a Spanish prompt even though what is stored is English: the
-  // reading model matches across languages, which is the whole point of
-  // storing one language and quoting the other.
   await handlers.get('session_start')!({}, ctx(cwd, 'new-es'));
   const recalled = await handlers.get('before_agent_start')!({
-    prompt: 'Should we use Zod to validate the API boundaries?', systemPrompt: 'Base',
+    prompt: '¿Cómo validar los límites de la API con Zod?', systemPrompt: 'Base',
   }, ctx(cwd, 'new-es'));
-  assert.match(recalled.message.content, /Use Zod to validate the API boundaries/u);
+  assert.ok(recalled.message.content.includes(spoken));
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-es'));
 });
 
