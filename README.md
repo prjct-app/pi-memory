@@ -84,7 +84,6 @@ ahead of the other candidates (margin ≥ 0.2).
 
 ```text
 /memory init            # explicitly bind this checkout and create/adopt its authority
-/memory setup           # set or rotate the optional TypeSafe evaluator key
 /memory status          # read-only when this checkout has not been initialized
 /memory sources          # counters, last run per adapter, queued jobs, and what is due
 /memory sync [adapter]   # scan and enqueue now; does not copy raw source bodies
@@ -109,33 +108,18 @@ npm run daemon -- start --home "$PI_MEMORY_HOME" --provider anthropic --model cl
 npm run daemon -- stop
 ```
 
-## Optional semantic reranking
+## Evidence selection
 
-Memory works without a classifier. Reranking requires an explicit project
-`config.json` setting and a TypeSafe key; a shared credential alone never enables
-it, and `/memory init` preserves a previous opt-out.
-
-```json
-{ "rerank": { "enabled": true, "model": "jev-1.13.0", "candidates": 24, "timeoutMs": 15000 } }
-```
-
-When enabled, `memory_context` may ask Jev to order its shortlist. Scores are
-advisory: low relevance, weak evidence, missing judgements, or instruction flags
-never delete candidates. The active Pi model assesses their meaning and validity.
-Missing credentials, timeout, and offline mode preserve the fused order.
-`PI_MEMORY_RERANK=0` disables this stage; `PI_MEMORY_OFFLINE=1` prevents network use.
-The key stays in the OS keyring, never in project configuration.
-
-Automatic hooks do not ask Jev to remove turns or promote tool failures into
-rules. Observations remain available as evidence; the active model can record a
-verified lesson explicitly. Configured daemon curation uses its Pi model through
-the public SDK. Session-close curation requires `PI_MEMORY_CURATE_ON_CLOSE=1`.
+Retrieval presents fused evidence directly to the active model. It uses no external
+classifier or additional credential. Tool failures remain observations; a model can
+record a verified lesson explicitly. Configured daemon curation uses its Pi model
+through the public SDK. Session-close curation requires `PI_MEMORY_CURATE_ON_CLOSE=1`.
 
 ## Long sessions
 
 Pi owns normal compaction. Observation masking and history retirement are off by
-default. The fallback context ceiling follows the actual model window and output
-reserve, without an arbitrary message-count cap. A newer rule snapshot does not
+default. The default context hook preserves all messages unchanged, including during a
+memory fault. Explicit custom handoff budgets remain available. A newer rule snapshot does not
 declare earlier retrieved evidence obsolete.
 
 ## Sources

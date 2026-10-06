@@ -8,12 +8,12 @@ export type HistoryPolicy = Readonly<{
   targetTokens: number;
   /** Excess required before a batch is retired (not a provider cache TTL). */
   advanceTokens: number;
-  /** Tokens of Jev-judged turns that justify a batch on their own, under the target. */
+  /** Tokens of the explicitly supplied reviewer-judged turns that justify a batch on their own, under the target. */
   judgedAdvanceTokens?: number;
 }>;
 
 /**
- * Jev's verdict on an old turn, keyed by turnKeyOf. Only turns it called
+ * the explicitly supplied reviewer's verdict on an old turn, keyed by turnKeyOf. Only turns it called
  * retirable are listed; everything else stays exactly as it was.
  */
 export type TurnVerdicts = ReadonlyMap<string, Readonly<{ reason: string }>>;
@@ -78,7 +78,7 @@ const roundsOf = (messages: readonly HandoffMessage[], reference?: ReferenceLook
 };
 
 /**
- * Old, complete turns Jev judged no longer needed, each as one round that
+ * Old, complete turns the explicitly supplied reviewer judged no longer needed, each as one round that
  * replaces the whole turn — the operator message included — with a one-line
  * reference. The session file still holds every word.
  */
@@ -119,7 +119,7 @@ export const retainHistory = (messages: readonly HandoffMessage[], previous: num
   const tokens = historical.reduce((sum, item) => sum + estimateHandoffTokens(item), 0)
     - rounds.filter(round => round.end <= previous).reduce((sum, round) => sum + round.tokens, 0);
   const state = { frontier: previous, tokens };
-  // Jev-judged turns are retired for being useless, not only for size: enough of
+  // the explicitly supplied reviewer-judged turns are retired for being useless, not only for size: enough of
   // them pending is a batch of its own, even under the target.
   const pendingJudged = judgedRounds.filter(round => round.end > previous);
   const judgedDue = pendingJudged.reduce((sum, round) => sum + round.tokens, 0)

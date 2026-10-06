@@ -129,7 +129,7 @@ test('small contexts remain byte-stable without initialization', async t => {
   assert.deepEqual(notices, []);
 });
 
-test('a lost binding fails closed after the project authority has been opened', async t => {
+test('a lost binding blocks memory access while preserving the conversation', async t => {
   const { mkdtemp, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -155,13 +155,13 @@ test('a lost binding fails closed after the project authority has been opened', 
   ctx.model = modelB;
   await handlers.get('model_select')!({ model: modelB, previousModel: modelA, source: 'set' }, ctx);
   const result = await handlers.get('context')!({ messages: [{ role: 'user', content: 'private original' }] }, ctx);
-  assert.equal(JSON.stringify(result.messages).includes('private original'), false);
-  assert.match(JSON.stringify(result.messages), /failed safely/u);
-  assert.equal(aborted.count, 1);
-  assert.ok(notices.some(message => message.includes('binding disappeared')));
+  assert.deepEqual(result, {}, 'Pi keeps the original conversation');
+  assert.equal(aborted.count, 0);
+  await assert.rejects(runtime.engine(), /binding disappeared/);
+  await assert.rejects(runtime.readable(), /binding disappeared/);
 });
 
-test('a reassigned binding fails closed after the project authority has been opened', async t => {
+test('a reassigned binding blocks memory access while preserving the conversation', async t => {
   const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -194,10 +194,10 @@ test('a reassigned binding fails closed after the project authority has been ope
   ctx.model = modelB;
   await handlers.get('model_select')!({ model: modelB, previousModel: modelA, source: 'set' }, ctx);
   const result = await handlers.get('context')!({ messages: [{ role: 'user', content: 'private original' }] }, ctx);
-  assert.equal(JSON.stringify(result.messages).includes('private original'), false);
-  assert.match(JSON.stringify(result.messages), /failed safely/u);
-  assert.equal(aborted.count, 1);
-  assert.ok(notices.some(message => message.includes('binding changed')));
+  assert.deepEqual(result, {}, 'Pi keeps the original conversation');
+  assert.equal(aborted.count, 0);
+  await assert.rejects(runtime.engine(), /binding changed/);
+  await assert.rejects(runtime.readable(), /binding changed/);
 });
 
 test('a handoff authority opened during a session transition cannot activate stale state', async t => {
@@ -376,9 +376,10 @@ test('model switching during explicit initialization uses transient mode until o
   deferred.release!();
   const initialized = await opening;
   assert.deepEqual(await handlers.get('context')!({ messages }, ctx), {});
-  assert.equal(runtime.handoff.getGate(root, 'pending-init')?.projectId, initialized.engine.scopeId);
+  assert.equal((await runtime.engine()).scopeId, initialized.engine.scopeId);
   await rm(memoryRegistryPath(home));
-  assert.match(JSON.stringify((await handlers.get('context')!({ messages }, ctx)).messages), /failed safely/);
+  assert.deepEqual(await handlers.get('context')!({ messages }, ctx), {});
+  await assert.rejects(runtime.engine(), /binding disappeared/);
 });
 
 test('a stale prompt/activity open cannot overwrite a replacement session', async t => {

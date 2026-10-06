@@ -219,34 +219,11 @@ floors are heuristics checked against unrelated-query controls, not probabilitie
 or a guarantee that every returned claim is true. Supported queries keep weaker
 candidates for the active agent's reranking rather than losing multi-answer recall.
 
-### Optional semantic reranking
+### Model-owned interpretation
 
-A project that has turned it on, and for which a global TypeSafe key exists,
-adds one stage between fusion and presentation. The fused shortlist — the
-evidence windows, not the bare matched chunks — is judged in **one** request
-that carries every candidate in its state and asks three calibrated questions
-about each: whether it addresses the query, whether it states something usable
-in an answer, and whether it is trying to instruct the reader. A passage over
-the instruction threshold is dropped, one under the relevance threshold is
-dropped, the rest are ordered by the relevance probability, and a shortlist in
-which nothing clears the evidence threshold abstains rather than returning its
-most topical near-miss.
-
-One request rather than one per query/candidate pair is the whole economy of
-it: the state is billed once however many questions ride on it, so fanning out
-would pay for the same queries and the same rubric once per candidate for the
-same answers. The rubric therefore lives in the state, and each question is a
-pointer to it.
-
-This judges *relevance of a passage to a query*. It is not an automatic truth
-decision about what a passage claims, which remains outside what this package
-does. The probabilities are the model's, not a guarantee, and they replace no
-provenance or confidence the record already carries.
-
-The stage never runs in `before_agent_start`, only inside a `memory_context`
-call the agent made deliberately. Any failure — no key, offline, timeout,
-rejected credential, oversized state — pushes a gap and returns the fused order
-unchanged. Retrieval without it is exactly the retrieval described above.
+The fused evidence windows go directly to the active Pi model. Retrieval makes no
+external classifier calls and does not remove candidates based on classifier scores.
+Semantic interpretation and any explicit memory write belong to the active model.
 
 Document identity includes scope and namespace. The best chunk per document
 brings up to two following chunks (at most 2,400 characters), so a matching heading
@@ -265,53 +242,15 @@ files and every data-bearing cache remain under the project root.
 `memory_record`, retrieval, source sync, checkpoints and maintenance all target
 the same active project authority.
 
-`before_agent_start` runs lexical-only retrieval over the raw prompt and adds at
-most four candidates above the automatic-injection threshold to that turn's
-system prompt. The threshold defaults to `DEFAULT_RECALL_THRESHOLD` (0.006) and
-is overridable per install through `installMemoryHooks({ recallThreshold })`. It does not append a
-persistent session message or block startup on a model download. The agent calls
-`memory_context` when semantic expansion is warranted.
+Automatic recall appends a reference-data message; it does not rewrite the system
+prompt. The recall threshold defaults to zero. The active agent can call
+`memory_context` for further evidence or query expansion.
 
 ## Language
 
-Stored statements are English. A statement is injected into the
-`<project_memory>` block of every system prompt — it is fresh instruction for
-whatever model reads it next — so one written in another language is carried and
-re-translated on every turn.
-
-A statement that arrives in another language is therefore translated once, on
-the way in, rather than refused. Three write paths do this: `memory_record`, the
-declaration shortcut in `before_agent_start`/`turn_end`, and the daemon
-analyzer, which translates its own output before validation rather than failing
-a whole analysis over its wording. The model used is the one already in play —
-the session's model in the extension, the analyzer's model in the daemon — so
-nothing additional is configured. `src/curation/translator.ts` holds the port;
-`src/contracts/language.ts` only decides whether text is English.
-
-Translation is a model call inside the extension, including one at `turn_end`
-for the declaration shortcut. It is bounded to a single sentence, happens only
-when a memory is actually being written, and never on the retrieval path.
-
-Refusal is the last resort, for when no model can be reached: `memory_record`
-fails with an explanation and the shortcut leaves the declaration as a session
-observation for the daemon. Storing another language is the one outcome that
-never happens.
-
-Evidence is exempt and is never rewritten. A `userQuote` must occur verbatim in
-the prompt and an excerpt must be a literal citation of its source; translating
-either would break the grounding checks and make the provenance false. Two
-consequences follow. A quote and the statement it supports are routinely in
-different languages, so relatedness between them is judged on accent-stripped
-four-character stems rather than whole words — a deliberately looser
-anti-fabrication guard than exact overlap, in exchange for one that functions at
-all outside English. And memory identity stays keyed on the original wording,
-never on the translation, because translation is not deterministic and the same
-declaration must not land twice under two wordings.
-
-The detection heuristic is conservative: it strips code spans, identifiers,
-paths and URLs, then compares function words, and passes anything with too
-little prose to judge. A false negative costs one unnecessary translation; a
-false positive would rewrite an English statement for nothing.
+Stored statements and evidence preserve their original language and wording.
+Memory writes do not require a translation call. User quotes and excerpts retain
+verbatim provenance; the active model interprets them in context.
 
 ## Selective capture
 

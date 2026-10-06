@@ -27,7 +27,7 @@ export type WindowResult = HandoffResult & Readonly<{
   unchanged?: true;
   /** Present when this call advanced the observation-masking frontier. */
   observations?: Readonly<{ masked: number; maskedTokens: number }>;
-  /** Old turns Jev judged no longer needed that are out of the context now. */
+  /** Old turns the explicitly supplied reviewer judged no longer needed that are out of the context now. */
   judged?: Readonly<{ turns: number; tokens: number }>;
 }>;
 

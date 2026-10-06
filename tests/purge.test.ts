@@ -108,19 +108,14 @@ test('the sweep deletes what was left dead and the failures Jev calls one run\'s
   const run = await remember(engine, 'failure', 'The test run failed 4 of 76 tests in the wombat suite.');
   const lesson = await remember(engine, 'failure', 'Installing with npm corrupts the lockfile; use pnpm install.');
   const raw = await remember(engine, 'failure', 'bash: echidna: command not found');
-  const ask = async (_state: Record<string, unknown>, questions: Readonly<Record<string, string>>) => {
-    const statements = (_state.statements as Record<string, string>);
-    return new Map(Object.keys(questions).map(key => [key, /pnpm/.test(statements[key.replace(/_durable$/, '')] ?? '') ? 0.9 : 0.1] as const));
-  };
-  const plan = await planSweep(engine, ask);
+  const plan = await planSweep(engine);
   assert.deepEqual(plan.dead, [legacy.id]);
-  assert.deepEqual(plan.junk.map(item => item.id).sort(), [run.id, raw.id].sort());
-  const noJev = await planSweep(engine, undefined);
-  assert.deepEqual(noJev.junk.map(item => item.id), [raw.id], 'without Jev only raw output is certain garbage');
+  assert.deepEqual(plan.junk.map(item => item.id), [raw.id]);
+  assert.ok(engine.projection.getFact(run.id), 'semantic judgments remain with the active model');
   const done = await runSweep(engine, plan, join(home, 'backups'));
-  assert.equal(done.facts, 3);
+  assert.equal(done.facts, 2);
   assert.ok(done.backup && (await readdir(done.backup)).includes('memory.sqlite'));
   assert.equal(engine.projection.getFact(lesson.id)?.statement, 'Installing with npm corrupts the lockfile; use pnpm install.');
-  for (const id of [legacy.id, run.id, raw.id]) assert.equal(engine.projection.getFact(id), undefined);
-  assert.doesNotMatch(await journalText(engine.root), /platypus|wombat|echidna/);
+  for (const id of [legacy.id, raw.id]) assert.equal(engine.projection.getFact(id), undefined);
+  assert.doesNotMatch(await journalText(engine.root), /platypus|echidna/);
 });

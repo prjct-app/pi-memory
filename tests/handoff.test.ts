@@ -309,9 +309,9 @@ test('checkpoints are private project/session rows excluded from recall and sema
   await assert.rejects(() => writeCheckpoint(a, { ...checkpoint, goal: 'x'.repeat(4_001) }), /4000 bytes/);
 });
 
-test('handler fault returns safe context and does not replay original', async () => {
+test('an explicitly bounded handoff fails closed when its engine fails', async () => {
   const controller = createHandoffController({
-    engine: async () => { throw new Error('boom'); },
+    engine: async () => { throw new Error('boom'); }, budget: DEFAULT_HANDOFF_BUDGET,
   });
   const original: HandoffMessage[] = [user('secret oversized original')];
   controller.activate('p_fault', '/fault/project', 's1', 'test fault');
@@ -331,10 +331,10 @@ test('handler fault returns safe context and does not replay original', async ()
   assert.ok(notices.some(item => item.includes('fail-open') || item.includes('Handoff fault')));
 });
 
-test('model_select engine failure makes the next public context hook fail closed', async () => {
+test('model_select engine failure fails closed for an explicitly bounded context', async () => {
   const handlers = new Map<string, (event: any, ctx: any) => unknown>();
   const pi = { on(name: string, handler: (event: any, ctx: any) => unknown) { handlers.set(name, handler); } };
-  const controller = createHandoffController({ engine: async () => { throw new Error('owner unavailable'); } });
+  const controller = createHandoffController({ budget: DEFAULT_HANDOFF_BUDGET, engine: async () => { throw new Error('owner unavailable'); } });
   const { installHandoffHooks } = await import('../src/handoff/hooks.ts');
   installHandoffHooks(pi as never, controller, async () => { throw new Error('owner unavailable'); });
   const aborted = { n: 0 };
@@ -447,4 +447,15 @@ test('A to B to A stays bounded across context calls', () => {
     assert.match(JSON.stringify(first.messages), /third latest/);
     assert.deepEqual(first.messages, again.messages);
   }
+});
+
+
+test('default handoff preserves every turn and opaque reasoning despite memory faults', async () => {
+  const controller = createHandoffController({ engine: async () => { throw new Error('memory unavailable'); } });
+  const messages: HandoffMessage[] = Array.from({ length: 500 }, (_, i) => user(`Steering ${i}: ${'x'.repeat(1000)}`));
+  messages.push({ role: 'assistant', content: [{ type: 'thinking', thinking: 'retained', thinkingSignature: 'opaque' }] } as never);
+  const ctx = { cwd: '/project', sessionManager: { getSessionId: () => 'long' }, abort: () => { throw new Error('must not abort'); } } as never;
+  const result = await controller.safeContext(messages, ctx);
+  assert.equal(result.messages, messages);
+  assert.equal(result.unchanged, true);
 });

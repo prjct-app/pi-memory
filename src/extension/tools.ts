@@ -25,8 +25,6 @@ export type ExtensionMemoryRuntime = Readonly<{
   readable(): Promise<readonly MemoryEngine[]>;
   /** Project-local lookup across eligible ranking legs. */
   search: MemorySearch;
-  /** The optional semantic reranker, resolved once. Absent when no key is configured. */
-  reranker?(): Promise<Parameters<MemorySearch>[1]>;
   /** Legacy integration hook, unused: stored text is never automatically translated. */
   englishStatement?(text: string, signal?: AbortSignal): Promise<string | undefined>;
   stagedEvidence(): ReadonlyMap<string, EvidenceRef>;
@@ -170,12 +168,10 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
       }
       if (params.action === 'lookup') {
         // Only this path — a tool call the agent made on purpose — may reach a
-        // reranker. The automatic per-turn hook stays lexical and offline.
-        const rerank = await runtime.reranker?.() ?? {};
         return result(await runtime.search({ queries: params.queries ?? [],
           ...(params.asOf ? { asOf: params.asOf } : {}), namespaces: params.namespaces ?? ['memory', 'memory.topic'],
           ...(params.kinds ? { kinds: params.kinds } : {}), maxBytes: params.maxBytes ?? 1500,
-          dense: true, signal }, rerank));
+          dense: true, signal }));
       }
       if (params.action === 'inspect') {
         const memory = await runtime.engine();

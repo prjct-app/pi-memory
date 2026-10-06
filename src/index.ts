@@ -26,7 +26,6 @@ import {
 } from './extension/panel.ts';
 import { memoryPanelSpec, type MemoryOps } from './extension/memory-panel.ts';
 import { brand, openPanel, repairToolArgs } from '@prjct.app/pi-tui-kit';
-import { ensureEvaluator, evaluatorLine } from './extension/evaluator.ts';
 
 export type MemoryExtensionOptions = Readonly<{
   home?: string; recallThreshold?: number;
@@ -44,11 +43,10 @@ export type MemoryExtensionOptions = Readonly<{
   sources?: Omit<SourceInstallOptions, 'home'>;
 }>;
 
-const USAGE = 'Usage: /memory init | setup | status | sources | sync [adapter] | index {json} | replay | rebuild | gc | prune | purge [confirm] | checkpoint-wal | migrate-curated | checkpoint {json}';
+const USAGE = 'Usage: /memory init | status | sources | sync [adapter] | index {json} | replay | rebuild | gc | prune | purge [confirm] | checkpoint-wal | migrate-curated | checkpoint {json}';
 const ACTIONS = new Set(['init', 'setup', 'status', 'sources', 'sync', 'index', 'replay', 'rebuild', 'gc', 'prune', 'purge', 'checkpoint-wal', 'migrate-curated', 'checkpoint']);
 const ACTION_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: 'init', label: 'init', description: 'Initialize memory for this checkout' },
-  { value: 'setup', label: 'setup', description: 'Set or rotate the optional TypeSafe evaluator key' },
   { value: 'status', label: 'status', description: 'Show project memory status' },
   { value: 'sources', label: 'sources', description: 'Show source adapters and sync state' },
   { value: 'sync', label: 'sync', description: 'Scan all sources now, or choose an adapter' },
@@ -218,14 +216,10 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
               ...(contextPrune() ? { context: contextLine(contextPrune()?.status()) } : {}),
             };
           },
-          // The panel is itself a custom screen, so it reports the evaluator
-          // state instead of opening the secret prompt inside it. /memory setup
-          // is the interactive path.
           init: async () => {
             const done = await runtime.initialize();
-            const evaluator = await ensureEvaluator({ ...ctx, mode: 'rpc' }, done.engine.root).catch(() => undefined);
             return `${done.created ? 'Initialized' : 'Already initialized'} · project ${done.binding.projectId}`
-              + (evaluator ? ` · ${evaluatorLine(evaluator.resolved, evaluator.enabled)}` : '');
+;
           },
           sync: async adapter => {
             const engine = await runtime.engine();
@@ -258,18 +252,12 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
       if (action === 'init') {
         if (target) throw new Error('Usage: /memory init');
         const initialized = await runtime.initialize();
-        // The evaluator is optional, so it is offered after memory already
-        // exists and never decides whether initialization succeeded. Declining
-        // the prompt leaves a working project, not a failed command.
-        const evaluator = await ensureEvaluator(ctx, initialized.engine.root)
-          .catch(() => undefined);
         await show(resultModel('memory · init', [
           `status ${initialized.created ? 'initialized' : 'already initialized'}`,
           `project ${initialized.binding.projectId}`,
           `checkout ${initialized.binding.checkoutId}`,
           `source ${initialized.binding.source}`,
           `location ${initialized.binding.location}`,
-          ...(evaluator ? [evaluatorLine(evaluator.resolved, evaluator.enabled)] : []),
         ]));
         return;
       }
@@ -282,15 +270,12 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
       if (action === 'purge') {
         if (target && target !== 'confirm') throw new Error('Usage: /memory purge [confirm]');
         const project = await runtime.engine();
-        const rerank = (await runtime.reranker?.())?.rerank;
-        const ask = rerank?.ask ? (state: Record<string, unknown>, questions: Readonly<Record<string, string>>, signal?: AbortSignal) =>
-          rerank.ask!(state, questions, signal ? { signal } : {}) : undefined;
-        const plan = await planSweep(project, ask);
+        const plan = await planSweep(project);
         const examples = plan.junk.slice(0, 5).map(item => `junk  ${item.statement.slice(0, 90)}`);
         if (target !== 'confirm') {
           await show(resultModel('memory · purge (preview)', [
             `dead ${plan.dead.length} superseded or contradicted facts`,
-            `junk ${plan.junk.length} live failures that are one run's state${plan.judged ? '' : ' (raw output only: no Jev key)'}`,
+            `junk ${plan.junk.length} live failures that are one run's state (raw tool output only)`,
             ...examples,
             'run /memory purge confirm to back up and delete them for good',
           ]));
@@ -301,29 +286,6 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
           `deleted ${done.facts} facts · ${done.documents} documents · ${done.evidence} evidence · ${done.events} journal events`,
           ...(done.deferred ? [`deferred ${done.deferred} journal streams another session is writing; the next GC finishes them`] : []),
           `backup ${done.backup ?? 'none needed'}`,
-        ]));
-        return;
-      }
-      if (action === 'setup') {
-        if (target) throw new Error('Usage: /memory setup');
-        // The key is global but the switch that uses it is per project, so
-        // there has to be a project. Say that plainly instead of surfacing a
-        // raw "not initialized" through the host's extension error channel.
-        const project = await runtime.engine().catch(error => {
-          if (error instanceof Error && /not initialized/iu.test(error.message)) return undefined;
-          throw error;
-        });
-        if (!project) {
-          await show(resultModel('memory · setup', [
-            'status not initialized',
-            'run /memory init first — it offers the evaluator key as part of setup',
-          ]));
-          return;
-        }
-        const evaluator = await ensureEvaluator(ctx, project.root, { force: true });
-        await show(resultModel('memory · setup', [
-          evaluatorLine(evaluator.resolved, evaluator.enabled),
-          ...(evaluator.prompted ? [] : ['no terminal UI · set TYPESAFE_API_KEY or run /memory setup in a TUI session']),
         ]));
         return;
       }
