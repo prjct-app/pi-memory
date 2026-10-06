@@ -13,6 +13,9 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # These runners exercise CPU embeddings; CUDA is not used by this job.
+      ONNXRUNTIME_NODE_INSTALL: skip
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +37,7 @@ jobs:
       # deliberately rather than the test being made conditional.
       - name: Integration tests
         run: |
-          npm i -g @earendil-works/pi-coding-agent@0.85.1
+          npm i -g @earendil-works/pi-coding-agent@1.0.3
           npm run test:integration
 
       # Downloads the sentence encoder on a cold runner, so it is cached
