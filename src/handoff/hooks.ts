@@ -5,7 +5,6 @@ import { assertCheckpoint, readCheckpoint, writeCheckpoint, type OperationalChec
 import type { HandoffMessage } from './turns.ts';
 import { createContextWindow } from './window.ts';
 import { createSessionReferenceResolver } from './session-references.ts';
-import type { TurnJudge } from './turn-judge.ts';
 import { setMode } from '@prjct.app/pi-tui-kit';
 import { DEFAULT_HISTORY_POLICY, type HistoryPolicy } from './history.ts';
 import { DEFAULT_OBSERVATION_POLICY, type ObservationPolicy } from './observations.ts';
@@ -49,8 +48,6 @@ export const createHandoffController = (options: {
   observations?: Partial<ObservationPolicy>;
   /** Economic completed-history target, not a hard model/request limit. */
   history?: Partial<HistoryPolicy>;
-  /** Jev's verdicts on old turns; absent means only the structural policy retires history. */
-  judge?: TurnJudge;
 } ) => {
   const observations: ObservationPolicy = { ...DEFAULT_OBSERVATION_POLICY, ...options.observations };
   const budget = options.budget ?? DEFAULT_HANDOFF_BUDGET;
@@ -165,9 +162,7 @@ export const createHandoffController = (options: {
     slot.windows.set(windowKey, window);
     const resolve = createSessionReferenceResolver(ctx.sessionManager, current, generation);
     const selected = window(current, checkpoint, budgetFor(ctx), overheadFor(ctx),
-      assistant => resolve(ctx.sessionManager, slot.generation, assistant), options.judge?.verdicts(windowKey));
-    // Judge what is still unjudged for the next request; this one never waits for it.
-    void options.judge?.consider(windowKey, current);
+      assistant => resolve(ctx.sessionManager, slot.generation, assistant));
     if (!selected.ok) return refuse(ctx, selected.instruction);
     if (selected.judged) {
       const tokens = selected.judged.tokens;
@@ -191,6 +186,7 @@ export const createHandoffController = (options: {
   };
 
   const safeContext = async (messages: readonly HandoffMessage[], ctx: ExtensionContext): Promise<ContextResult> => {
+    if (!options.budget && !options.history?.enabled && !options.observations?.enabled) return { messages, unchanged: true };
     const generation = slot.generation;
     try {
       const sessionId = ctx.sessionManager.getSessionId();

@@ -1,35 +1,25 @@
 import { cp, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Ask } from '../curation/jev-curator.ts';
 import type { MemoryEngine } from '../engine.ts';
-import { judgeAutoCaptures } from './intake.ts';
+import { RAW_FAILURE } from './maintenance.ts';
 
 /**
  * One pass over what is already stored, for memory written before deleting
  * meant deleting: every fact left superseded or contradicted, and every live
- * `failure` that Jev calls the state of one run rather than a lesson. Planning
+ * `failure` that contains raw tool output. Semantic judgments belong to the active model. Planning
  * reads only; running backs the store up first, then purges.
  */
 export type SweepPlan = Readonly<{
   dead: readonly string[];
   junk: readonly Readonly<{ id: string; statement: string; reason: string }>[];
-  judged: boolean;
 }>;
 
-export const planSweep = async (engine: MemoryEngine, ask: Ask | undefined, signal?: AbortSignal): Promise<SweepPlan> => {
-  const dead = engine.projection.deadFactIds(engine.scopeId);
-  const failures = engine.projection.activeFacts(engine.scopeId, 1_000).filter(fact => fact.kind === 'failure');
-  if (!failures.length) return { dead, junk: [], judged: Boolean(ask) };
-  // Without Jev only raw tool output is certain garbage; a failure that reads like a lesson is left for Jev.
-  const verdicts = await judgeAutoCaptures(failures.map(fact => fact.statement), ask, signal);
-  const junk = failures.flatMap((fact, index) => {
-    const verdict = verdicts[index]!;
-    if (verdict.keep) return [];
-    if (!ask && verdict.reason !== 'raw tool output') return [];
-    return [{ id: fact.id, statement: fact.statement, reason: verdict.reason }];
-  });
-  return { dead, junk, judged: Boolean(ask) };
-};
+export const planSweep = async (engine: MemoryEngine): Promise<SweepPlan> => ({
+  dead: engine.projection.deadFactIds(engine.scopeId),
+  junk: engine.projection.activeFacts(engine.scopeId, 1_000)
+    .filter(fact => fact.kind === 'failure' && RAW_FAILURE.test(fact.statement))
+    .map(fact => ({ id: fact.id, statement: fact.statement, reason: 'raw tool output' })),
+});
 
 export const runSweep = async (engine: MemoryEngine, plan: SweepPlan, backupRoot: string) => {
   const ids = [...plan.dead, ...plan.junk.map(item => item.id)];

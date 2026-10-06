@@ -15,19 +15,19 @@ import { scoreOracle, type OracleCase } from '../src/eval/oracles.ts';
 // is not a claim of general semantic quality.
 test('default lookup and automatic recall retain positives/qualified evidence and abstain on unrelated attributes EN/ES', async t => {
   const root = await mkdtemp(join(tmpdir(), 'relevance-'));
-  const engine = new MemoryEngine({ root, scopeId: 'p_relevance', sessionId: 'test', provider: {
+  const home = join(root, 'memory-home');
+  const { engine } = await MemoryEngine.initializeProject(root, 'test', { home, provider: {
     model: 'offline-lexical', isLocal: true, embed: async texts => texts.map(() => [1, ...Array.from({ length: 15 }, () => 0)]),
   } });
   t.after(async () => { await engine.dispose(); await rm(root, { recursive: true, force: true }); });
   const statements = JSON.parse(await readFile(new URL('./fixtures/real-project-statements.json', import.meta.url), 'utf8')) as string[];
   const cases = JSON.parse(await readFile(new URL('./fixtures/real-project-oracles.json', import.meta.url), 'utf8')) as OracleCase[];
   for (const statement of statements) await engine.recordFact({ kind: 'fact', statement, confidence: 1, evidence: [], entities: [], episodeIds: [], tags: {} });
-  t.mock.method(MemoryEngine, 'forInitializedProject', async () => engine);
   const handlers = new Map<string, (event: any, ctx: any) => Promise<any>>();
   const tools = new Map<string, any>();
   const pi = { on: (name: string, handler: any) => handlers.set(name, handler),
     registerTool: (tool: any) => tools.set(tool.name, tool) } as unknown as ExtensionAPI;
-  const runtime = installMemoryHooks(pi);
+  const runtime = installMemoryHooks(pi, { home });
   installMemoryTools(pi, runtime);
   const ctx = { cwd: root, sessionManager: { getSessionId: () => 'test' } };
   await handlers.get('session_start')!({}, ctx);

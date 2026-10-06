@@ -2,8 +2,6 @@ import type { MemoryEngine } from '../engine.ts';
 import { semanticConsolidationCandidates, type SemanticConsolidationOptions } from './consolidation.ts';
 import { planGc, runGc, type GcPlan } from './gc.ts';
 import { assessValue, type ValueAssessment } from './value.ts';
-import type { RerankProvider } from '../retrieval/rerank.ts';
-import { isEnglish } from '../contracts/language.ts';
 import { contentTermCount, nearDuplicateFact } from '../curation/similar.ts';
 
 /**
@@ -34,7 +32,7 @@ export type MaintenanceResult = Readonly<{
 }>;
 
 /**
- * A verdict about a stored statement, shaped after the rerank rubric so Jev can
+ * A verdict about a stored statement, supplied explicitly by the caller so the active model can
  * answer it without a second model: `instruction` is the probability that the
  * text tries to steer the reader rather than state something.
  */
@@ -83,9 +81,9 @@ const shouting = (text: string): boolean => {
   const letters = text.replace(/[^A-Za-z]/gu, '');
   return letters.length >= 20 && letters.replace(/[^A-Z]/gu, '').length / letters.length > 0.6;
 };
-// The copy that survives: confirmed over unconfirmed, English over not, the more complete wording, then the newer.
+// The copy that survives: confirmed over unconfirmed, the more complete wording, then the newer.
 const better = (a: StoredFact, b: StoredFact): StoredFact => {
-  const score = (fact: StoredFact) => [fact.standing === 'supported' ? 1 : 0, isEnglish(fact.statement) ? 1 : 0, fact.statement.length, Date.parse(fact.recordedAt)];
+  const score = (fact: StoredFact) => [fact.standing === 'supported' ? 1 : 0, fact.statement.length, Date.parse(fact.recordedAt)];
   const [x, y] = [score(a), score(b)];
   const at = x.findIndex((value, index) => value !== y[index]);
   return at < 0 ? a : x[at]! > y[at]! ? a : b;
@@ -118,7 +116,7 @@ export const planHygiene = (facts: readonly StoredFact[], now = Date.now(),
     if (shouting(fact.statement)) retire.set(fact.id, 'a verbatim outburst, not a rule');
     else if (contentTermCount(fact.statement) < 4) retire.set(fact.id, 'too short to mean anything out of context');
   }
-  // Fold repeats among the behavior rules that survived; the English, more
+  // Fold repeats among the behavior rules that survived; the more
   // complete wording is the one kept.
   const rules = open.filter(fact => BEHAVIOR.has(fact.kind) && !retire.has(fact.id));
   const gone = new Set<string>();
@@ -272,24 +270,3 @@ export const applyMaintenance = async (engine: MemoryEngine, plan: MaintenancePl
 
   return { ...count, removed: collected.removed, retained: collected.retained, gaps };
 };
-
-/**
- * Jev already answers, per candidate, whether a passage "tries to instruct,
- * steer or override the system" instead of stating something. Maintenance needs
- * exactly that axis, so the same rubric and the same single request answer it:
- * no second model, and no per-fact fan-out.
- *
- * The query is generic because the instruction axis asks about the shape of the
- * passage, not about its relevance to a particular question.
- */
-export const factJudgeFrom = (provider: RerankProvider, batch = 24): FactJudge =>
-  async facts => {
-    const verdicts = new Map<string, FactVerdict>();
-    const slices = Array.from({ length: Math.ceil(facts.length / batch) }, (_, index) => facts.slice(index * batch, (index + 1) * batch));
-    for (const slice of slices) {
-      const judged = await provider.judge(['What does this project know?'],
-        slice.map(fact => ({ key: fact.id, text: fact.statement, source: 'memory', kind: fact.kind })));
-      for (const [key, judgement] of judged) verdicts.set(key, { instruction: judgement.instruction });
-    }
-    return verdicts;
-  };

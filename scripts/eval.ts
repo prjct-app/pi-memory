@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { MemoryEngine } from '../src/engine.ts';
 import { federatedSearch } from '../src/retrieval/federated.ts';
-import { createRerankProvider, readRerankConfig } from '../src/retrieval/rerank.ts';
 import { TransformerEmbeddingProvider } from '../src/vector/providers.ts';
 import { sha256 } from '../src/workspace/project-identity.ts';
 import { retrievalMetrics } from '../tests/eval/metrics.ts';
@@ -17,9 +16,6 @@ const arg = (name: string): string | undefined => {
   return at >= 0 ? process.argv[at + 1] : undefined;
 };
 const suite = resolve(arg('--suite') ?? 'tests/fixtures/retrieval-gold.jsonl');
-// Opt-in: the default run must stay offline and reproducible. With --rerank the
-// global TypeSafe credential is used, so the run costs money and needs network.
-const rerankRequested = process.argv.includes('--rerank');
 const rows = (await readFile(suite, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as Doc | Case);
 const docs = rows.filter((row): row is Doc => row.type === 'document');
 const cases = rows.filter((row): row is Case => row.type === 'query');
@@ -62,18 +58,7 @@ try {
   const candidateNoExpansion = [] as string[][];
   const candidate = [] as string[][];
   const federated = [] as string[][];
-  const reranked = [] as string[][];
   const perScopeRrf = [] as string[][];
-  const rerank = rerankRequested ? await (async () => {
-    const { resolveKey } = await import('@prjct.app/pi-tui-kit');
-    const { openSecretStore } = await import('../src/security/credentials.ts');
-    const resolved = await resolveKey(await openSecretStore());
-    if (!resolved.key) throw new Error('--rerank needs a TypeSafe key; run /memory setup or export TYPESAFE_API_KEY.');
-    const config = await readRerankConfig(root);
-    const provider = createRerankProvider({ ...config, enabled: true, apiKey: resolved.key });
-    if (!provider) throw new Error('--rerank could not build a provider.');
-    return { rerank: provider, ...(config.candidates ? { rerankCandidates: config.candidates } : {}) };
-  })() : undefined;
   for (const item of cases) {
     candidateNoExpansion.push((await engine.search({ queries: [item.query], dense: true, limit: 10, maxBytes: 16384 })).items.map(hit => hit.id));
     candidate.push((await engine.search({ queries: [item.query, ...(item.expansions ?? [])], dense: true, limit: 10, maxBytes: 16384 })).items.map(hit => hit.id));
@@ -84,14 +69,11 @@ try {
       (await scope.search({ queries: [item.query], dense: true, limit: 10, maxBytes: 32768 })).items
         .map(hit => ({ id: hit.id, score: hit.score * [1, 0.9, 0.85][index]! }))));
     perScopeRrf.push(local.flat().sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, 10).map(hit => hit.id));
-    if (rerank) {
-      reranked.push((await federatedSearch(scopes, { queries: [item.query], dense: true, limit: 10, maxBytes: 16384 }, rerank)).items.map(hit => hit.id));
-    }
   }
   const report = { bm25: metrics(lexical), hashing: metrics(hashing), fused: metrics(fused),
     candidateNoExpansion: metrics(candidateNoExpansion), candidate: metrics(candidate),
     perScopeRrf: metrics(perScopeRrf), federatedNoExpansion: metrics(federated),
-    ...(rerank ? { rerankedNoExpansion: metrics(reranked) } : {}) };
+ };
   const worstCases = cases.map((item, index) => ({ query: item.query, positives: item.positives,
     rank: candidateNoExpansion[index]!.findIndex(id => item.positives.includes(id)) + 1,
     rankWithExpansions: candidate[index]!.findIndex(id => item.positives.includes(id)) + 1,
@@ -114,21 +96,8 @@ try {
     && report.federatedNoExpansion.ndcgAt10 >= report.perScopeRrf.ndcgAt10
     && report.federatedNoExpansion.recallAt10 >= report.perScopeRrf.recallAt10
     && report.federatedNoExpansion.mrr >= report.perScopeRrf.mrr;
-  // Reported, never enforced here. Whether the semantic stage earns its place
-  // is a judgement about lift over the fused baseline on this corpus, and the
-  // per-query deltas are printed so a regression in one language cannot hide
-  // inside an improved average.
-  const rerankGate = rerank ? {
-    measured: 'rerankedNoExpansion', against: 'federatedNoExpansion',
-    ndcgAt10Delta: Number((report.rerankedNoExpansion!.ndcgAt10 - report.federatedNoExpansion.ndcgAt10).toFixed(4)),
-    recallAt10Delta: Number((report.rerankedNoExpansion!.recallAt10 - report.federatedNoExpansion.recallAt10).toFixed(4)),
-    mrrDelta: Number((report.rerankedNoExpansion!.mrr - report.federatedNoExpansion.mrr).toFixed(4)),
-    perQuery: cases.map((item, index) => ({ query: item.query,
-      fusedRank: federated[index]!.findIndex(id => item.positives.includes(id)) + 1,
-      rerankedRank: reranked[index]!.findIndex(id => item.positives.includes(id)) + 1 }))
-      .filter(row => row.fusedRank !== row.rerankedRank),
-  } : { measured: 'skipped', reason: 'pass --rerank with a configured TypeSafe key' };
-  console.log(JSON.stringify({ suite, corpus: docs.length, queries: cases.length, ...report, worstCases, rerankGate,
+
+  console.log(JSON.stringify({ suite, corpus: docs.length, queries: cases.length, ...report, worstCases,
     federatedGate: { passed: federatedPassed, scopes: scopes.length, measures: 'federatedNoExpansion' },
     gate: { passed, measures: 'candidateNoExpansion', best, requiredNdcgAt10: Number((best.ndcgAt10 * 1.2).toFixed(4)),
       actualNdcgAt10: Number(measured.ndcgAt10.toFixed(4)),

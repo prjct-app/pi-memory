@@ -37,7 +37,7 @@ jobs:
       # deliberately rather than the test being made conditional.
       - name: Integration tests
         run: |
-          npm i -g @earendil-works/pi-coding-agent@1.0.3
+          npm i -g @earendil-works/pi-coding-agent@1.0.4
           npm run test:integration
 
       # Downloads the sentence encoder on a cold runner, so it is cached

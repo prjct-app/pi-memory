@@ -35,11 +35,11 @@ test('memory command completes every action and configured sync adapter without 
     return items?.map(item => item.value) ?? null;
   };
   assert.deepEqual(await values(''), [
-    'init', 'setup', 'status', 'sources', 'sync', 'index', 'checkpoint', 'replay', 'rebuild', 'gc', 'prune', 'purge',
+    'init', 'status', 'sources', 'sync', 'index', 'checkpoint', 'replay', 'rebuild', 'gc', 'prune', 'purge',
     'checkpoint-wal', 'migrate-curated',
   ]);
   assert.deepEqual(await values('st'), ['status']);
-  assert.deepEqual(await values('s'), ['setup', 'status', 'sources', 'sync']);
+  assert.deepEqual(await values('s'), ['status', 'sources', 'sync']);
   assert.deepEqual(await values('sync '), ['sync custom-json', 'sync pi-session', 'sync prjct-observations']);
   assert.deepEqual(await values('sync p'), ['sync pi-session', 'sync prjct-observations']);
   assert.equal(await values('sync missing'), null);
@@ -162,19 +162,13 @@ test('/memory index without a payload answers with its usage, as it always has',
   assert.equal(h.notices.at(-1)?.level, 'error');
 });
 
-test('/memory setup before init explains itself instead of failing at the host', async t => {
+test('/memory init needs no classifier configuration or secret prompt', async t => {
   const h = await commandHarness(t);
-  const answer = await h.run('setup');
-  assert.notEqual(answer?.level, 'error', 'setup must not reach the host error channel');
-  assert.match(answer?.text ?? '', /\/memory init/u);
-});
-
-test('/memory setup after init reports the evaluator without a terminal to ask on', async t => {
-  const h = await commandHarness(t);
-  await h.run('init');
-  const answer = await h.run('setup');
+  const answer = await h.run('init');
   assert.notEqual(answer?.level, 'error');
-  assert.match(answer?.text ?? '', /rerank/u);
+  assert.match(answer?.text ?? '', /initialized/u);
+  assert.doesNotMatch(h.notices.map(item => item.text).join('\n'), /rerank|credential|setup|jev/i);
+  await assert.rejects(h.run('setup'), /Usage: \/memory init/u);
 });
 
 test('/memory index with a payload is accepted once memory exists', async t => {

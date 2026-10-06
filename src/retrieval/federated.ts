@@ -6,14 +6,8 @@ import {
 } from './hybrid.ts';
 import { lexicalTerms, queryWords, rankLexically, words } from './lexical.ts';
 import { relevantKeys, relevanceTerms } from './relevance.ts';
-import {
-  DEFAULT_RERANK_CANDIDATES, EVIDENCE_MIN,
-  type RerankProvider,
-} from './rerank.ts';
 
 export type FederatedQuery = Omit<MemoryQuery, 'scopeId'>;
-/** The reranker is behaviour, not part of the query, so it is passed alongside it. */
-export type FederatedOptions = Readonly<{ rerank?: RerankProvider; rerankCandidates?: number }>;
 // Relevance floors, not probabilities. A nearest neighbour always exists even
 // when a scope knows nothing about the question. Real unrelated-query controls
 // reached cosine 0.30; keep a margin and require substantial lexical coverage.
@@ -22,69 +16,8 @@ export const MIN_LEXICAL_QUALITY = 0.2;
 const keyOf = (item: MemoryHit): string => JSON.stringify([item.scopeKind, item.scopeId, item.namespace, item.id]);
 const chunkKey = (item: MemoryHit): string => JSON.stringify([keyOf(item), item.chunkId]);
 
-/**
- * One request judges the whole shortlist. A call per query/candidate pair is
- * what the vendor cookbook does and what this deliberately does not: the state
- * is billed once per request however many questions ride on it, so fanning out
- * pays for the same queries and rubric N times over for the same answers.
- *
- * Failure degrades to the fused order. A reranker that is missing, offline,
- * slow or rejected must never be able to empty an answer the existing ranking
- * already found.
- */
-const rerankCandidates = async (
-  candidates: readonly RankedCandidate[],
-  queries: readonly string[],
-  gaps: string[],
-  request: FederatedQuery,
-  options: FederatedOptions,
-): Promise<readonly RankedCandidate[]> => {
-  const provider = options.rerank;
-  if (!provider || request.rerank === false || !candidates.length) return candidates;
-  const cap = Math.max(1, Math.min(50, options.rerankCandidates ?? DEFAULT_RERANK_CANDIDATES));
-  const shortlist = candidates.slice(0, cap);
-  // Candidates past the cap keep their fused order behind the judged ones.
-  // Their scores stay on the fusion scale, which is why they are never
-  // interleaved with the probabilities above them.
-  const tail = candidates.slice(cap);
-  const judgements = await provider.judge(queries, shortlist.map(candidate => ({
-    key: chunkKey(candidate.item),
-    ...(candidate.item.title ? { title: candidate.item.title } : {}),
-    text: candidate.item.statement,
-    source: candidate.item.source,
-    kind: candidate.item.kind,
-  })), request.signal ? { signal: request.signal } : {}).catch((error: unknown) => {
-    gaps.push(`Semantic reranking unavailable: ${rerankError(error)}`);
-    return undefined;
-  });
-  if (!judgements) return candidates;
-  // A classifier is advisory. A false negative must not erase evidence before
-  // the active model can inspect it, including legitimate imperative project rules.
-  if (shortlist.some(candidate => {
-    const score = judgements.get(chunkKey(candidate.item))?.relevant;
-    return score === undefined || !Number.isFinite(score) || score < 0 || score > 1;
-  })) {
-    gaps.push('Semantic reranking was incomplete; fused candidates retained.');
-    return candidates;
-  }
-  const ranked = shortlist.map((candidate, index) => ({
-    candidate, index, score: judgements.get(chunkKey(candidate.item))!.relevant,
-  })).sort((a, b) => b.score - a.score || a.index - b.index);
-  if (!shortlist.some(candidate => (judgements.get(chunkKey(candidate.item))?.evidence ?? 0) >= EVIDENCE_MIN)) {
-    gaps.push('Semantic reranking found weak evidence; candidates retained for the active model to assess.');
-  }
-  return [...ranked.map(({ candidate }) => ({
-    ...candidate, item: { ...candidate.item, reason: [...candidate.item.reason, 'rerank (advisory)'] },
-  })), ...tail];
-};
-
-const rerankError = (error: unknown): string => {
-  const text = error instanceof Error ? error.message : String(error);
-  return /timeout|aborted|AbortError|APIUserAbort/iu.test(text) ? 'request timed out' : text.slice(0, 200);
-};
-
 /** Candidate fusion: one lexical corpus, real cosine, no source quotas or scope priors. */
-export const federatedSearch = async (engines: readonly MemoryEngine[], request: FederatedQuery, options: FederatedOptions = {}): Promise<HybridSearchResult> => {
+export const federatedSearch = async (engines: readonly MemoryEngine[], request: FederatedQuery): Promise<HybridSearchResult> => {
   if (!engines.length) return { status: 'abstained', items: [], gaps: ['No memory scope is open.'], omitted: 0 };
   if (engines.some(engine => engine.scopeKind !== 'project')) throw new Error('Memory search is project-local.');
   if (new Set(engines.map(engine => engine.scopeId)).size > 1) throw new Error('Mixed-project search is not allowed.');
@@ -195,9 +128,8 @@ export const federatedSearch = async (engines: readonly MemoryEngine[], request:
       return candidate;
     }
   });
-  const judged = await rerankCandidates(expanded, queries, gaps, request, options);
-  return presentCandidates(judged, {
-    limit, maxBytes, threshold, asOf, gaps: judged.length ? gaps : [...gaps, 'Insufficient evidence: no candidate meets the default relevance gate.'], sourceCap: false, identity: keyOf,
+  return presentCandidates(expanded, {
+    limit, maxBytes, threshold, asOf, gaps: expanded.length ? gaps : [...gaps, 'Insufficient evidence: no candidate meets the default relevance gate.'], sourceCap: false, identity: keyOf,
     neighbors: () => [],
     expand: selected => searched.flatMap(entry => {
       const seeds = selected.filter(candidate => candidate.item.scopeId === entry.engine.scopeId

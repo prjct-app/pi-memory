@@ -16,7 +16,6 @@ import type { ObservationPolicy } from '../handoff/observations.ts';
 import type { HistoryPolicy } from '../handoff/history.ts';
 import { capToolOutput, DEFAULT_OUTPUT_CAP_POLICY, isCappedTool, type OutputCapPolicy } from '../handoff/caps.ts';
 import { federatedSearch } from '../retrieval/federated.ts';
-import { createRerankProvider, readRerankConfig } from '../retrieval/rerank.ts';
 import type { Translator } from '../curation/translator.ts';
 import { nearDuplicateFact } from '../curation/similar.ts';
 import { runHygiene } from '../retention/maintenance.ts';
@@ -38,7 +37,6 @@ export type MemorySession = Readonly<{
   /** Set only after ownership validation succeeds, never for a pending open. */
   authorityId?: string;
   readable?: Promise<readonly MemoryEngine[]>;
-  reranker?: Promise<Parameters<typeof federatedSearch>[2]>;
   ctx?: ExtensionContext;
   prompt: string;
   evidence: ReadonlyMap<string, EvidenceRef>;
@@ -106,7 +104,6 @@ const retainedJson = (value: unknown): string => JSON.stringify(value)
 
 export type MemorySearch = (
   request: Parameters<typeof federatedSearch>[1],
-  options?: Parameters<typeof federatedSearch>[2],
 ) => ReturnType<typeof federatedSearch>;
 
 // The shared evidence-coverage gate runs before ranking for both lookup and
@@ -126,8 +123,6 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   embeddingProvider?: EmbeddingProvider;
   /** Called once the new session's context is in place; never awaited. */
   onSessionStart?: () => Promise<void> | void;
-  /** Reranker override (tests, custom deployments); defaults to the global TypeSafe credential. */
-  rerank?: Parameters<typeof federatedSearch>[2];
   /** Translator override (tests, custom deployments); defaults to the active session model. */
   /** Legacy injection retained for callers; storage preserves original text. */
   translator?: Translator;
@@ -166,7 +161,15 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
 
   const engine = async (): Promise<MemoryEngine> => {
     const current = get();
-    if (current.engine) return current.engine;
+    if (current.engine) {
+      const project = await current.engine;
+      if (!current.ctx || get().generation !== current.generation) throw new Error('Memory session changed while opening its authority.');
+      const binding = await resolveMemoryProject((await location(current.ctx.cwd)).path, memoryHomeFor(options.home));
+      if (get().generation !== current.generation) throw new Error('Memory session changed while validating its authority.');
+      if (!binding) throw new Error('Memory project binding disappeared after the authority was opened.');
+      if (project.scopeId !== binding.projectId) throw new Error('Memory project binding changed after the authority was opened.');
+      return project;
+    }
     if (!current.ctx) throw new Error('Memory session has not started.');
     const opening = location(current.ctx.cwd).then(where => MemoryEngine.forInitializedProject(where.path,
       current.ctx!.sessionManager.getSessionId(), engineOptions()));
@@ -248,8 +251,6 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
 
   /** The active project's memory only. Team/shared databases are not readable. */
   const readable = async (): Promise<readonly MemoryEngine[]> => {
-    const current = get();
-    if (current.readable) return current.readable;
     const pending = engine().then(project => [project] as const);
     set({ readable: pending });
     return pending;
@@ -362,38 +363,8 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     await tidy();
   });
 
-  const search: MemorySearch = async (request, searchOptions) => federatedSearch(await readable(), request, searchOptions);
+  const search: MemorySearch = async request => federatedSearch(await readable(), request);
 
-  /**
-   * Resolved once and cached, including the negative answer. Reranking is
-   * optional: no key, no provider, and retrieval keeps the fused order it has
-   * always returned. The automatic per-turn hook never asks for this — only a
-   * tool call the agent made on purpose does.
-   */
-  const reranker = async (): Promise<Parameters<typeof federatedSearch>[2]> => {
-    const current = get().reranker;
-    if (current) return current;
-    const pending = (async (): Promise<Parameters<typeof federatedSearch>[2]> => {
-      if (options.rerank) return options.rerank;
-      try {
-        const [{ resolveKey }, { openSecretStore }] = await Promise.all([
-          import('@prjct.app/pi-tui-kit'), import('../security/credentials.ts')]);
-        const resolved = await resolveKey(await openSecretStore());
-        if (!resolved.key) return {};
-        const project = await engine();
-        const config = await readRerankConfig(project.root);
-        // A shared credential is not a project opt-in.
-        const provider = createRerankProvider({ ...config, apiKey: resolved.key });
-        return provider ? { rerank: provider, ...(config.candidates ? { rerankCandidates: config.candidates } : {}) } : {};
-      } catch {
-        // A locked keyring, a missing native binding or an unreadable config
-        // must not take retrieval down with it.
-        return {};
-      }
-    })();
-    set({ reranker: pending });
-    return pending;
-  };
   const handoff = createHandoffController({ engine: handoffEngine, toolOverhead: () => {
     try {
       const active = new Set(pi.getActiveTools());
@@ -621,7 +592,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   });
 
   return {
-    engine, writableEngine, initialize, readable, search, reranker, handoff,
+    engine, writableEngine, initialize, readable, search, handoff,
     location: async () => location(get().ctx?.cwd ?? process.cwd()),
     scheduleBackfill,
     /** Settles once every background observation flush has finished. */
