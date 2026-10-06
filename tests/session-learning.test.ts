@@ -16,8 +16,8 @@ import { MemoryEngine } from '../src/engine.ts';
 import { scriptedTranslator } from '../src/curation/translator.ts';
 import { TestEmbeddingProvider } from './helpers.ts';
 
-const ctx = (cwd: string, sessionId = 's1') => ({
-  cwd, sessionManager: { getSessionId: () => sessionId }, getContextUsage: () => ({ tokens: 0 }),
+const ctx = (cwd: string, sessionId = 's1', mode = 'tui') => ({
+  cwd, mode, sessionManager: { getSessionId: () => sessionId }, getContextUsage: () => ({ tokens: 0 }),
 });
 
 test('session log keeps failures and corrections, not routine successes or secrets', async t => {
@@ -161,6 +161,32 @@ test('a declared correction is supported and recalled by the next session before
   }, ctx(cwd, 'new-session'));
   assert.match(recalled.message.content, /<project_memory trust="untrusted">[\s\S]*Never use npm; use pnpm/);
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-session'));
+});
+
+test('a task brief from another agent (pi -p, rpc, a subagent child) never becomes a correction', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'pi-session-brief-'));
+  const cwd = join(home, 'work');
+  await mkdir(cwd, { recursive: true });
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const brief = 'You are a QA gate subagent. NO installs (never npm/pnpm install), no servers, no restarts. Never use npm; use pnpm for this repository.';
+  const runs: [string, string, Record<string, string>][] = [['print', 'brief-print', {}], ['rpc', 'brief-rpc', {}], ['tui', 'brief-child', { PI_SUBAGENTS_CHILD: '1' }]];
+  for (const [mode, sessionId, env] of runs) {
+    const saved = { ...process.env };
+    Object.assign(process.env, env);
+    t.after(() => { process.env = saved; });
+    const handlers = new Map<string, (event: any, context: any) => Promise<any>>();
+    const pi = { on(name: string, handler: any) { handlers.set(name, handler); } } as unknown as ExtensionAPI;
+    const runtime = installMemoryHooks(pi, { home });
+    await handlers.get('session_start')!({}, ctx(cwd, sessionId, mode));
+    await runtime.initialize();
+    await handlers.get('before_agent_start')!({ prompt: brief, systemPrompt: 'Base' }, ctx(cwd, sessionId, mode));
+    await handlers.get('turn_end')!({}, ctx(cwd, sessionId, mode));
+    await runtime.flushed();
+    const engine = await runtime.engine();
+    assert.equal(engine.projection.activeFacts(engine.scopeId, 20).some(fact => fact.kind === 'correction'), false, `${mode} ${sessionId}`);
+    await handlers.get('session_shutdown')!({}, ctx(cwd, sessionId, mode));
+    process.env = saved;
+  }
 });
 
 test('an explicit recuerda declaration is supported and recalled by the next session', async t => {

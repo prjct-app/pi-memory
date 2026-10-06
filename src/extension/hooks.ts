@@ -62,6 +62,15 @@ const textContent = (content: readonly unknown[]): string => content.flatMap(par
   return typeof text === 'string' ? [text] : [];
 }).join('\n');
 
+/**
+ * Only the person at an interactive terminal states corrections. A prompt in
+ * print, json or rpc mode, or in a subagent child, was written by another
+ * agent: `pi -p '<task brief>'` filed every imperative line of the brief
+ * ("NO installs", "halt execution") as a project-wide correction.
+ */
+export const fromPerson = (ctx: Pick<ExtensionContext, 'mode'>): boolean =>
+  ctx.mode === 'tui' && process.env.PI_SUBAGENTS_CHILD !== '1';
+
 const clip = (text: string, max = 2048): string => text.length <= max ? text : `${text.slice(0, max)}…`;
 const evidenceHandle = (evidence: ReadonlyMap<string, EvidenceRef>, id: string): string => {
   const digest = sha256(id);
@@ -581,7 +590,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     const quote = correction ?? remembered;
     const summary = quote ?? prompt;
     const kind = correction ? 'correction' as const : 'instruction' as const;
-    if (sessionObservationWorthy({ kind, tool: 'user_input', outcome: 'stated', summary })) {
+    if (fromPerson(ctx) && sessionObservationWorthy({ kind, tool: 'user_input', outcome: 'stated', summary })) {
       queueSessionObservation({
         id: sessionObservationId(ctx.sessionManager.getSessionId(), 'user_input', summary, kind),
         kind, tool: 'user_input', outcome: 'stated', summary, observedAt, provenance: 'declared',
@@ -701,7 +710,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     const model = current.ctx?.model;
     const project = engines.find(memory => memory.scopeKind === 'project');
     const sessionFile = current.ctx?.sessionManager.getSessionFile?.();
-    if (project && model && process.env.PI_SUBAGENTS_CHILD !== '1') {
+    if (project && model && current.ctx && fromPerson(current.ctx)) {
       await loadDaemonConfig({ ...(options.home === undefined ? {} : { home: options.home }), provider: model.provider, model: model.id,
         projectId: project.scopeId, ...(sessionFile ? { sessionFile } : {}) })
         .then(config => spawnCurationRun(config)).catch(() => undefined);

@@ -33,7 +33,7 @@ const harness = async (t: { after(fn: () => unknown): void }, options: { git: bo
   const runtime = installMemoryHooks(pi, { home, embeddingProvider: new TestEmbeddingProvider(),
     ...(options.translator ? { translator: options.translator } : {}) });
   installMemoryTools(pi, runtime);
-  const ctx = { cwd, sessionManager: { getSessionId: () => 'works-session' }, getContextUsage: () => undefined };
+  const ctx = { cwd, mode: 'tui', sessionManager: { getSessionId: () => 'works-session' }, getContextUsage: () => undefined };
   await handlers.get('session_start')!({}, ctx);
   t.after(async () => { await handlers.get('session_shutdown')!({}, ctx); await rm(root, { recursive: true, force: true }); });
   return { root, repo, cwd, home, handlers, tools, runtime, ctx, sent };
