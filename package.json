@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-memory",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi-native temporal memory and hybrid retrieval for agents.",
   "type": "module",
   "keywords": [
@@ -46,6 +46,7 @@
   "dependencies": {
     "@huggingface/transformers": "4.3.0",
     "@napi-rs/keyring": "1.3.0",
+    "@prjct.app/pi-secrets": "^0.2.0",
     "@prjct.app/pi-tui-kit": "^0.3.1",
     "@typesafe-ai/sdk": "0.6.0",
     "sqlite-vec": "0.1.9",
@@ -95,7 +96,8 @@
     "external": [
       "@huggingface/transformers",
       "@napi-rs/keyring",
-      "sqlite-vec"
+      "sqlite-vec",
+      "@prjct.app/pi-secrets/privacy"
     ],
     "standalone": [
       "scripts/memory-daemon.ts"

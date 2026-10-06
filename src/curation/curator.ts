@@ -1,3 +1,4 @@
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
 import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createHash } from 'node:crypto';
@@ -91,7 +92,7 @@ export const createSdkCurator = async (options: Readonly<{ provider: string; mod
     curate: async (rules, userMessages, signal) => {
       const message = await runtime.completeSimple(model, {
         systemPrompt: SYSTEM,
-        messages: [{ role: 'user', content: JSON.stringify({ rules, userMessages }), timestamp: Date.now() }],
+        messages: [{ role: 'user', content: JSON.stringify(await protectOutboundData({ rules, userMessages })), timestamp: Date.now() }],
       }, { maxTokens: Math.min(model.maxTokens, 32768), reasoning: 'high', ...(signal === undefined ? {} : { signal }) });
       if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error(message.errorMessage || `Curation ${message.stopReason}.`);
       return parseCuration(extractJsonObject(textOf(message)), rules, userMessages);

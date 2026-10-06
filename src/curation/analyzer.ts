@@ -1,3 +1,4 @@
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
 import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CurationBlockError, type AnalysisResult, type Analyzer, type EvidenceBundle } from './types.ts';
@@ -60,7 +61,7 @@ export const createSdkAnalyzer = async (options: Readonly<{
       const maxTokens = Math.min(8192, Math.max(256, Math.ceil(maxOutputChars / 4)));
       const message = await runtime.completeSimple(model, {
         systemPrompt: SYSTEM,
-        messages: [{ role: 'user', content: bundlePrompt(bundle), timestamp: Date.now() }],
+        messages: [{ role: 'user', content: await protectOutboundData(bundlePrompt(bundle)), timestamp: Date.now() }],
       }, { maxTokens, ...(signal === undefined ? {} : { signal }) });
       if (message.stopReason === 'error' || message.stopReason === 'aborted') {
         throw new Error(message.errorMessage || `Analysis ${message.stopReason}.`);

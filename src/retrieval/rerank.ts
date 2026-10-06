@@ -1,3 +1,4 @@
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
 import { JEV_MODEL } from '@prjct.app/pi-tui-kit';
 import { chmod, open, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -154,7 +155,7 @@ export class TypeSafeRerankProvider implements RerankProvider {
     const { state, questions } = rerankRequest(queries, candidates);
     const serialized = JSON.stringify(state);
     if (serialized.length > MAX_STATE_CHARS) throw new Error('Rerank state exceeded its size budget.');
-    const result = await this.client.systemOne({ model: this.model, state: state as never, questions: questions as never }, { ...options, signal: this.bounded(options.signal) });
+    const result = await this.client.systemOne(await protectOutboundData({ model: this.model, state: state as never, questions: questions as never }), { ...options, signal: this.bounded(options.signal) });
     const answers = result.answers as Record<string, NoulAnswer | undefined>;
     return new Map(candidates.map((candidate, index) => {
       const id = slot(index);
@@ -172,7 +173,7 @@ export class TypeSafeRerankProvider implements RerankProvider {
     const keys = Object.keys(questions);
     if (!keys.length) return new Map();
     if (JSON.stringify(state).length > MAX_STATE_CHARS) throw new Error('Jev state exceeded its size budget.');
-    const result = await this.client.systemOne({ model: this.model, state: state as never, questions: askRequest(questions) as never }, { ...options, signal: this.bounded(options.signal) });
+    const result = await this.client.systemOne(await protectOutboundData({ model: this.model, state: state as never, questions: askRequest(questions) as never }), { ...options, signal: this.bounded(options.signal) });
     const answers = result.answers as Record<string, NoulAnswer | undefined>;
     return new Map(keys.map(key => [key, score(answers[key])] as const));
   }

@@ -1,3 +1,4 @@
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
 import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 
@@ -38,7 +39,7 @@ const complete = async (
 ): Promise<string> => {
   const message = await runtime.completeSimple(model, {
     systemPrompt: SYSTEM,
-    messages: [{ role: 'user', content: text, timestamp: Date.now() }],
+    messages: [{ role: 'user', content: await protectOutboundData(text), timestamp: Date.now() }],
   }, { maxTokens: Math.min(2048, Math.max(256, Math.ceil(text.length / 2))), ...(signal === undefined ? {} : { signal }) });
   if (message.stopReason === 'error' || message.stopReason === 'aborted') {
     throw new TranslationUnavailableError(message.errorMessage || `Translation ${message.stopReason}.`);
