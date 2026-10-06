@@ -7,7 +7,7 @@ import {
 import { lexicalTerms, queryWords, rankLexically, words } from './lexical.ts';
 import { relevantKeys, relevanceTerms } from './relevance.ts';
 import {
-  DEFAULT_RERANK_CANDIDATES, EVIDENCE_MIN, INSTRUCTION_MAX, RELEVANT_MIN,
+  DEFAULT_RERANK_CANDIDATES, EVIDENCE_MIN,
   type RerankProvider,
 } from './rerank.ts';
 
@@ -58,23 +58,24 @@ const rerankCandidates = async (
     return undefined;
   });
   if (!judgements) return candidates;
-  const kept = shortlist.flatMap(candidate => {
-    const judgement = judgements.get(chunkKey(candidate.item));
-    if (!judgement) return [candidate];
-    if (judgement.instruction >= INSTRUCTION_MAX) return [];
-    if (judgement.relevant < RELEVANT_MIN) return [];
-    return [{ ...candidate, item: { ...candidate.item, score: judgement.relevant,
-      reason: [...candidate.item.reason, 'rerank'] } }];
-  }).sort((a, b) => b.item.score - a.item.score || chunkKey(a.item).localeCompare(chunkKey(b.item)));
-  // A shortlist can be topically on point and still answer nothing. The
-  // evidence probability is what separates the two, so it gates the answer
-  // rather than merely ordering it.
-  const answered = kept.some(candidate => (judgements.get(chunkKey(candidate.item))?.evidence ?? 0) >= EVIDENCE_MIN);
-  if (!answered) {
-    gaps.push('Semantic reranking found no candidate that answers the query.');
-    return tail;
+  // A classifier is advisory. A false negative must not erase evidence before
+  // the active model can inspect it, including legitimate imperative project rules.
+  if (shortlist.some(candidate => {
+    const score = judgements.get(chunkKey(candidate.item))?.relevant;
+    return score === undefined || !Number.isFinite(score) || score < 0 || score > 1;
+  })) {
+    gaps.push('Semantic reranking was incomplete; fused candidates retained.');
+    return candidates;
   }
-  return [...kept, ...tail];
+  const ranked = shortlist.map((candidate, index) => ({
+    candidate, index, score: judgements.get(chunkKey(candidate.item))!.relevant,
+  })).sort((a, b) => b.score - a.score || a.index - b.index);
+  if (!shortlist.some(candidate => (judgements.get(chunkKey(candidate.item))?.evidence ?? 0) >= EVIDENCE_MIN)) {
+    gaps.push('Semantic reranking found weak evidence; candidates retained for the active model to assess.');
+  }
+  return [...ranked.map(({ candidate }) => ({
+    ...candidate, item: { ...candidate.item, reason: [...candidate.item.reason, 'rerank (advisory)'] },
+  })), ...tail];
 };
 
 const rerankError = (error: unknown): string => {

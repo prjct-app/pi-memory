@@ -17,19 +17,16 @@ import type { HistoryPolicy } from '../handoff/history.ts';
 import { capToolOutput, DEFAULT_OUTPUT_CAP_POLICY, isCappedTool, type OutputCapPolicy } from '../handoff/caps.ts';
 import { federatedSearch } from '../retrieval/federated.ts';
 import { createRerankProvider, readRerankConfig } from '../retrieval/rerank.ts';
-import { isEnglish } from '../contracts/language.ts';
-import { createSdkTranslator, type Translator } from '../curation/translator.ts';
+import type { Translator } from '../curation/translator.ts';
 import { nearDuplicateFact } from '../curation/similar.ts';
 import { runHygiene } from '../retention/maintenance.ts';
 import { loadDaemonConfig } from '../daemon/config.ts';
 import { spawnCurationRun } from '../daemon/lifecycle.ts';
 import { admitCapture } from '../retention/capture-gate.ts';
-import { judgeAutoCaptures } from '../retention/intake.ts';
-import { createTurnJudge } from '../handoff/turn-judge.ts';
 import { redactSecrets } from '../security/redact.ts';
 import {
   appendSessionObservations, clipSessionSummary, declaredCorrectionQuote, declaredMemoryQuote,
-  sessionFailureStatement, sessionObservationId, sessionObservationIdentity, sessionObservationWorthy,
+  sessionObservationId, sessionObservationIdentity, sessionObservationWorthy,
   type SessionObservation,
 } from '../sources/session-log.ts';
 import { memoryHomeFor, sha256 } from '../workspace/project-identity.ts';
@@ -42,7 +39,6 @@ export type MemorySession = Readonly<{
   authorityId?: string;
   readable?: Promise<readonly MemoryEngine[]>;
   reranker?: Promise<Parameters<typeof federatedSearch>[2]>;
-  translator?: Promise<Translator | undefined>;
   ctx?: ExtensionContext;
   prompt: string;
   evidence: ReadonlyMap<string, EvidenceRef>;
@@ -133,6 +129,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   /** Reranker override (tests, custom deployments); defaults to the global TypeSafe credential. */
   rerank?: Parameters<typeof federatedSearch>[2];
   /** Translator override (tests, custom deployments); defaults to the active session model. */
+  /** Legacy injection retained for callers; storage preserves original text. */
   translator?: Translator;
 } = {}) => {
   const recallThreshold = options.recallThreshold ?? DEFAULT_RECALL_THRESHOLD;
@@ -266,19 +263,12 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   const promoteDeclaredFacts = async (project: MemoryEngine,
     declarations: MemorySession['declarations']): Promise<void> => {
     for (const declaration of declarations) {
-      // This shortcut stores the user's words as the statement itself, so a
-      // declaration in another language is translated first. The quote below is
-      // kept exactly as spoken: it is the evidence, and evidence is never
-      // rewritten. If no model is reachable the declaration stays a queued
-      // observation for the daemon rather than entering memory untranslated.
-      const statement = await englishStatement(declaration.quote);
-      if (!statement) continue;
+      // A declared rule is already authoritative text; preserve it verbatim.
+      const statement = declaration.quote;
       // A restated rule is already in memory; a second wording only adds noise.
       if (nearDuplicateFact(statement, project.projection.activeFacts(project.scopeId, DIGEST_SCAN_LIMIT))) continue;
       const observationKind = declaration.kind === 'correction' ? 'correction' : 'instruction';
-      // Identity stays keyed on what was actually said. Translation is not
-      // deterministic, so keying it on the English text would let the same
-      // declaration land twice with two different wordings.
+      // Identity stays keyed on what was actually said.
       const identity = sessionObservationIdentity(observationKind, 'user_input', declaration.quote);
       const id = `mem_${sha256(`declared:${project.scopeId}:${identity.semanticKey}:${identity.summaryHash}`).slice(0, 32)}`;
       if (project.projection.getFact(id)) continue;
@@ -298,49 +288,6 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     }
   };
 
-  const promoteSessionFailures = async (project: MemoryEngine, observations: readonly SessionObservation[]): Promise<void> => {
-    const existing = project.projection.activeFacts(project.scopeId, 200).map(item => ({ statement: item.statement, kind: item.kind }));
-    const candidates: { record: SessionObservation; statement: string; id: string; identity: ReturnType<typeof sessionObservationIdentity> }[] = [];
-    for (const record of observations) {
-      if (record.kind !== 'failure' || !sessionObservationWorthy(record)) continue;
-      const statement = sessionFailureStatement(record.summary);
-      if (!statement) continue;
-      const admission = admitCapture({ statement, kind: 'failure', existing });
-      if (!admission.accept) continue;
-      // Identity follows the diagnosis, so the same failure with other durations or ids is one memory.
-      const identity = sessionObservationIdentity('failure', record.tool, statement);
-      const id = `mem_${sha256(`failure:${project.scopeId}:${identity.semanticKey}:${identity.summaryHash}`).slice(0, 32)}`;
-      if (project.projection.getFact(id) || candidates.some(item => item.id === id)) continue;
-      candidates.push({ record, statement, id, identity });
-      existing.push({ statement, kind: 'failure' });
-    }
-    if (!candidates.length) return;
-    // Garbage is never stored: Jev decides, in one request, which of these is a lesson and which is one run's state.
-    const provider = (await reranker().catch(() => undefined))?.rerank;
-    const ask = provider?.ask ? (state: Record<string, unknown>, questions: Readonly<Record<string, string>>, signal?: AbortSignal) =>
-      provider.ask!(state, questions, signal ? { signal } : {}) : undefined;
-    const verdicts = await judgeAutoCaptures(candidates.map(item => item.statement), ask);
-    for (const [index, { record, statement, id, identity }] of candidates.entries()) {
-      if (!verdicts[index]?.keep) continue;
-      await project.recordFact({
-        // Stays `supported` on purpose: only a supported fact is eligible for the
-        // automatic snapshot, and recalling a diagnosis the project already hit
-        // is the whole point. Ageing out the ones nobody ever used again is the
-        // maintenance pass's job, not the capture path's.
-        id, kind: 'failure', statement, confidence: 0.8, standing: 'supported',
-        entities: [], episodeIds: [], validAt: record.observedAt,
-        evidence: [{
-          id: `ev_${sha256(`failure:${project.scopeId}:${identity.summaryHash}`).slice(0, 24)}`,
-          origin: 'host_observation', provenance: 'native_observation', contentHash: sha256(statement),
-          excerpt: statement, observedAt: record.observedAt,
-          actorId: record.sessionId, sessionId: record.sessionId,
-        }],
-        tags: { semanticKey: identity.semanticKey, summaryHash: identity.summaryHash, source: 'pi-session', capture: 'auto-derived' },
-      }, undefined, { dense: false }).catch(error => {
-        if (!(error instanceof Error) || !/already exists/u.test(error.message)) throw error;
-      });
-    }
-  };
 
   /**
    * Embeds what was written without blocking the turn. The first run loads
@@ -381,7 +328,6 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
       await appendSessionObservations({ projectId: project.scopeId, records: pending.observations,
         ...(options.home === undefined ? {} : { home: options.home }) });
       await promoteDeclaredFacts(project, pending.declarations);
-      await promoteSessionFailures(project, pending.observations);
       scheduleBackfill(project);
     } catch (error) {
       if (get().generation !== pending.generation) throw error;
@@ -391,9 +337,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     }
   };
 
-  // Flushing can call a model (translating a declaration to English before it
-  // is stored), so it never runs on the send/turn path. Flushes are chained so
-  // they stay ordered; shutdown awaits the chain.
+  // Keep storage and indexing off the send path. Shutdown awaits ordered flushes.
   const queue: { tail: Promise<void>; inFlight: number; tidied?: object } = { tail: Promise.resolve(), inFlight: 0 };
   const inBackground = (task: () => Promise<void>): Promise<void> => {
     queue.inFlight += 1;
@@ -418,35 +362,6 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     await tidy();
   });
 
-  /**
-   * Stored memory is English, so a statement that arrives in another language
-   * is translated on the way in rather than refused. Resolved once per session
-   * from the model already in use, including the negative answer: when no model
-   * is reachable nothing is stored in the other language, which is the
-   * invariant that matters most.
-   */
-  const translator = async (): Promise<Translator | undefined> => {
-    const current = get().translator;
-    if (current) return current;
-    const pending = (async (): Promise<Translator | undefined> => {
-      if (options.translator) return options.translator;
-      const model = get().ctx?.model;
-      if (!model) return undefined;
-      return createSdkTranslator({ provider: model.provider, model: model.id }).catch(() => undefined);
-    })();
-    set({ translator: pending });
-    return pending;
-  };
-
-  /** English as stored, or undefined when it could not be produced. */
-  const englishStatement = async (text: string, signal?: AbortSignal): Promise<string | undefined> => {
-    if (isEnglish(text)) return text;
-    const translate = await translator();
-    if (!translate) return undefined;
-    const translated = await translate.toEnglish(text, signal).catch(() => undefined);
-    return translated && isEnglish(translated) ? translated : undefined;
-  };
-
   const search: MemorySearch = async (request, searchOptions) => federatedSearch(await readable(), request, searchOptions);
 
   /**
@@ -467,9 +382,8 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
         if (!resolved.key) return {};
         const project = await engine();
         const config = await readRerankConfig(project.root);
-        // Con credencial resuelta, el reranking va activo salvo que el proyecto lo
-        // haya apagado explicitamente: tener la clave es la senal de que se quiere.
-        const provider = createRerankProvider({ ...config, enabled: config.enabled ?? true, apiKey: resolved.key });
+        // A shared credential is not a project opt-in.
+        const provider = createRerankProvider({ ...config, apiKey: resolved.key });
         return provider ? { rerank: provider, ...(config.candidates ? { rerankCandidates: config.candidates } : {}) } : {};
       } catch {
         // A locked keyring, a missing native binding or an unreadable config
@@ -497,18 +411,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   // hard window fallback in selectHandoffMessages.
   observations: options.observations ?? { enabled: false },
   history: options.history ?? { enabled: false },
-  // Jev judges old turns in the background; its verdicts only apply when history retirement is on.
-  ...(options.history?.enabled === false || options.history === undefined ? {} : { judge: createTurnJudge({
-    ask: async () => {
-      const provider = (await reranker().catch(() => undefined))?.rerank;
-      return provider?.ask ? (state: Record<string, unknown>, questions: Readonly<Record<string, string>>, signal?: AbortSignal) =>
-        provider.ask!(state, questions, signal ? { signal } : {}) : undefined;
-    },
-    facts: async () => {
-      const project = await engine().catch(() => undefined);
-      return project ? project.projection.activeFacts(project.scopeId, 60).map(fact => fact.statement) : [];
-    },
-  }) }) });
+  });
 
   /**
    * Records what this turn cost. The host reports the size of the whole
@@ -710,7 +613,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     const model = current.ctx?.model;
     const project = engines.find(memory => memory.scopeKind === 'project');
     const sessionFile = current.ctx?.sessionManager.getSessionFile?.();
-    if (project && model && current.ctx && fromPerson(current.ctx)) {
+    if (process.env.PI_MEMORY_CURATE_ON_CLOSE === '1' && project && model && current.ctx && fromPerson(current.ctx)) {
       await loadDaemonConfig({ ...(options.home === undefined ? {} : { home: options.home }), provider: model.provider, model: model.id,
         projectId: project.scopeId, ...(sessionFile ? { sessionFile } : {}) })
         .then(config => spawnCurationRun(config)).catch(() => undefined);
@@ -718,7 +621,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   });
 
   return {
-    engine, writableEngine, initialize, readable, search, reranker, englishStatement, handoff,
+    engine, writableEngine, initialize, readable, search, reranker, handoff,
     location: async () => location(get().ctx?.cwd ?? process.cwd()),
     scheduleBackfill,
     /** Settles once every background observation flush has finished. */

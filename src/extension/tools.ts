@@ -6,7 +6,6 @@ import { Type, type TSchema } from 'typebox';
 import { Compile } from 'typebox/compile';
 import { problemsOf, schemaForModel } from '@prjct.app/pi-tui-kit';
 import type { EvidenceRef } from '../contracts/evidence.ts';
-import { assertEnglishStatement, isEnglish } from '../contracts/language.ts';
 import { factIsValidAt, type MemoryKind, type MemoryStanding } from '../contracts/memory.ts';
 import type { MemoryEngine } from '../engine.ts';
 import type { MemorySearch } from './hooks.ts';
@@ -28,7 +27,7 @@ export type ExtensionMemoryRuntime = Readonly<{
   search: MemorySearch;
   /** The optional semantic reranker, resolved once. Absent when no key is configured. */
   reranker?(): Promise<Parameters<MemorySearch>[1]>;
-  /** The English form of a statement, translating when needed; undefined when no model is reachable. */
+  /** Legacy integration hook, unused: stored text is never automatically translated. */
   englishStatement?(text: string, signal?: AbortSignal): Promise<string | undefined>;
   stagedEvidence(): ReadonlyMap<string, EvidenceRef>;
   currentPrompt(): string;
@@ -144,21 +143,6 @@ const verifiedQuote = (quote: string | undefined, prompt: string, statement: str
   if (!related(value, statement)) throw new Error('userQuote must be related to the memory statement.');
   return value;
 };
-/**
- * Translate rather than refuse, and refuse only when translation is impossible:
- * storing the memory in another language is the one outcome that is never
- * acceptable, because it is re-read into a prompt on every later turn.
- */
-const englishOrThrow = async (
-  runtime: ExtensionMemoryRuntime, field: string, text: string, signal?: AbortSignal,
-): Promise<string> => {
-  if (isEnglish(text)) return text;
-  const translated = await runtime.englishStatement?.(text, signal);
-  if (translated) return translated;
-  assertEnglishStatement(field, text);
-  return text;
-};
-
 const RESERVED_TAGS = new Set(['sourceDocumentKey', 'sourceRevision', 'sourceAdapter', 'topicId', 'semanticKey']);
 const safeTags = (tags: Readonly<Record<string, string>> | undefined): Record<string, string> =>
   Object.fromEntries(Object.entries(tags ?? {}).filter(([key]) => !RESERVED_TAGS.has(key)));
@@ -249,7 +233,7 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
 
   pi.registerTool({
     name: 'memory_record', label: 'Record memory',
-    description: 'Record selective durable knowledge or resolve memory using current-session evidence handles or an exact user quote. Write statement and rationale in English whatever language the conversation is in; put the original wording in userQuote, which is kept verbatim as evidence.',
+    description: 'Record selective durable knowledge or resolve memory using current-session evidence handles or an exact user quote. Preserve the meaning and language of the statement and rationale; userQuote is kept verbatim as evidence.',
     parameters: schemaForModel(recordParameters),
     async execute(_toolCallId, params, signal) {
       checked(recordValidator(), params, 'memory_record');
@@ -266,20 +250,14 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
           if (!found) throw new Error(`Evidence ${id} was not observed by this session.`);
           return found;
         });
-        const englishRationale = await englishOrThrow(runtime, 'rationale', rationale, signal);
-        const quote = verifiedQuote(params.userQuote, runtime.currentPrompt(), `${fact.statement} ${englishRationale}`);
-        if (!quote && !evidence.some(item => related(item.excerpt, `${fact.statement} ${englishRationale}`))) {
+        const quote = verifiedQuote(params.userQuote, runtime.currentPrompt(), `${fact.statement} ${rationale}`);
+        if (!quote && !evidence.some(item => related(item.excerpt, `${fact.statement} ${rationale}`))) {
           throw new Error('Resolving memory requires related current-session evidence or an exact user quote.');
         }
-        await engine.resolveFact(factId, standing, englishRationale, params.replacementId);
+        await engine.resolveFact(factId, standing, rationale, params.replacementId);
         return result({ status: 'ok', factId, standing });
       }
-      const written = required(params.statement, 'statement');
-      // What is written here is injected into every later system prompt, so it
-      // is stored in English regardless of the language of the conversation
-      // that produced it. A statement in another language is translated rather
-      // than refused; the user's own wording survives verbatim in userQuote.
-      const statement = await englishOrThrow(runtime, 'statement', written, signal);
+      const statement = required(params.statement, 'statement');
       const admission = admitCapture({
         statement, kind: params.kind ?? 'learning',
         existing: engine.projection.activeFacts(engine.scopeId, 200).map(item => ({ statement: item.statement, kind: item.kind })),

@@ -1,5 +1,4 @@
 import type { MemoryKind, MemoryStanding } from '../contracts/memory.ts';
-import { assertEnglishStatement } from '../contracts/language.ts';
 import { redactSecrets } from '../security/redact.ts';
 import {
   ANALYSIS_ACTIONS, EPISTEMICS, type AnalysisProposal, type Epistemic, type EvidenceBundle, type ProposedFact,
@@ -44,12 +43,6 @@ const parseFact = (value: unknown, bundle: EvidenceBundle): ProposedFact => {
   }
   if (confidence < 0 || confidence > 1) throw new Error('Analysis confidence must be between 0 and 1.');
   if (!bundle.text.includes(excerpt)) throw new Error('Excerpt is not grounded in the source.');
-  // The system prompt asks for English; a model that ignores it must not be
-  // able to write another language into a store that is read back every turn.
-  // The excerpt is deliberately exempt: it is a verbatim citation of a source
-  // that may well be in another language, and rewriting it would break the
-  // grounding check above.
-  assertEnglishStatement('Analysis statement', statement);
   if (action === 'keep') {
     return { action, kind, epistemic, statement: redactSecrets(statement), confidence, standing, semanticKey,
       sourceRefs: [], excerpt: redactSecrets(excerpt), ...(typeof value.id === 'string' ? { id: value.id } : {}) };

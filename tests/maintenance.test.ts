@@ -164,14 +164,17 @@ test('the curator resolves a conflict, retires a one-off request and rewrites a 
   assert.equal(calls.n, 1);
 });
 
-test('curation output about unknown rules or with a non-English rewrite is dropped', () => {
+test('curation drops unknown rule IDs and preserves valid rewrites in the original language', () => {
   const rules = [{ id: 'a', kind: 'procedure', statement: 'x', recordedAt: '' }, { id: 'b', kind: 'procedure', statement: 'y', recordedAt: '' }];
   const parsed = parseCuration({ actions: [
     { op: 'retire', id: 'zzz', reason: 'unknown' },
     { op: 'rewrite', id: 'a', statement: 'no, recuerda esto vas a crear el PR para develop', reason: 'bad' },
     { op: 'supersede', id: 'b', by: 'a', reason: 'dup' },
   ] }, rules);
-  assert.deepEqual(parsed, [{ op: 'supersede', id: 'b', by: 'a', reason: 'dup' }]);
+  assert.deepEqual(parsed, [
+    { op: 'rewrite', id: 'a', statement: 'no, recuerda esto vas a crear el PR para develop', reason: 'bad' },
+    { op: 'supersede', id: 'b', by: 'a', reason: 'dup' },
+  ]);
 });
 
 test('the curator learns a repeated correction from the session, quoting the user, and never from invented words', async t => {

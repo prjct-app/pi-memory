@@ -73,7 +73,7 @@ test('retained envelopes append recall without repeating digest; snapshots revok
   assert.equal(result.length, 5);
   assert.match(String(result[2]?.content), /DIGEST_B/);
   assert.match(String(result[3]?.content), /DIGEST_A/);
-  assert.match(String(result[4]?.content), /supersedes ALL earlier/);
+  assert.match(String(result[4]?.content), /replaces earlier rule snapshots/);
   assert.match(String(result[4]?.content), /No eligible facts/);
   assert.deepEqual(uniqueMemory([input[1]!]), [input[1]], 'evicted digest must be delivered again');
 });

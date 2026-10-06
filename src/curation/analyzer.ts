@@ -1,7 +1,5 @@
 import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { isEnglish } from '../contracts/language.ts';
-import { sdkTranslatorFrom } from './translator.ts';
 import { CurationBlockError, type AnalysisResult, type Analyzer, type EvidenceBundle } from './types.ts';
 import { extractJsonObject, parseProposal } from './validate.ts';
 
@@ -36,34 +34,7 @@ Rules:
 - Living context is planning state, not evidence. Citations and excerpts must come only from the evidence field.
 - Do not copy the source body. Summaries stay compact. Empty noChange is allowed when nothing is worth remembering.
 - Never assign provenance. The publisher derives it from the source boundary; you are not a host observer.
-- Write every statement, topic title and summary in English, whatever language the source is in. Stored memory is read back into a prompt on every turn, so it is English only. Quote the source verbatim in excerpt; excerpts are evidence and are never translated.`;
-
-/**
- * Statements, topic titles and summaries are stored and re-read into prompts,
- * so they are English. Excerpts are not touched: they are verbatim citations
- * and `validate.ts` checks them against the source text.
- */
-const toEnglishProposal = async (
-  parsed: unknown,
-  toEnglish: (text: string) => Promise<string>,
-): Promise<unknown> => {
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed;
-  const value = parsed as Record<string, unknown>;
-  const englishOr = async (text: unknown): Promise<unknown> => {
-    if (typeof text !== 'string' || isEnglish(text)) return text;
-    return toEnglish(text).then(result => isEnglish(result) ? result : text).catch(() => text);
-  };
-  const topic = value.topic as Record<string, unknown> | undefined;
-  const facts = Array.isArray(value.facts) ? value.facts as Record<string, unknown>[] : [];
-  return {
-    ...value,
-    ...(topic ? { topic: { ...topic, title: await englishOr(topic.title), summary: await englishOr(topic.summary) } } : {}),
-    facts: await Promise.all(facts.map(async fact => ({ ...fact, statement: await englishOr(fact.statement) }))),
-    ...(Array.isArray(value.conflicts)
-      ? { conflicts: await Promise.all((value.conflicts as unknown[]).map(englishOr)) }
-      : {}),
-  };
-};
+- Preserve the source language, meaning, qualifications and force. Quote the source verbatim in excerpt; excerpts are evidence and are never translated.`;
 
 const textOf = (message: AssistantMessage): string =>
   message.content.flatMap(block => 'type' in block && block.type === 'text' && 'text' in block ? [String(block.text)] : []).join('\n');
@@ -85,9 +56,6 @@ export const createSdkAnalyzer = async (options: Readonly<{
   const auth = await runtime.checkAuth(options.provider);
   if (!auth) throw new CurationBlockError('missing_auth', `No credentials for analysis provider ${options.provider}.`);
   const maxOutputChars = options.maxOutputChars ?? 12_000;
-  // Same model, same credentials: nothing new is configured to keep stored
-  // statements English.
-  const translator = sdkTranslatorFrom(runtime, model);
   const run = async (bundle: EvidenceBundle, signal?: AbortSignal): Promise<AnalysisResult> => {
       const maxTokens = Math.min(8192, Math.max(256, Math.ceil(maxOutputChars / 4)));
       const message = await runtime.completeSimple(model, {
@@ -99,12 +67,7 @@ export const createSdkAnalyzer = async (options: Readonly<{
       }
       const output = textOf(message);
       if (Buffer.byteLength(output, 'utf8') > maxOutputChars) throw new Error('Analysis output exceeded the size limit.');
-      // The system prompt asks for English, but a source in another language
-      // pulls the model towards it. Translate what came back rather than fail
-      // the job: validation below treats non-English as an error, and losing a
-      // whole analysis over its wording would be the wrong trade.
-      const translated = await toEnglishProposal(extractJsonObject(output), text => translator.toEnglish(text, signal));
-      const proposal = parseProposal(translated, bundle);
+      const proposal = parseProposal(extractJsonObject(output), bundle);
       return {
         proposal,
         provider: options.provider,
