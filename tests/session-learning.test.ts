@@ -245,7 +245,7 @@ test('a recuerda declaration retains its language across sessions without transl
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-es'));
 });
 
-test('raw compiler output is captured, then retired by hygiene instead of recalled', async t => {
+test('tool observations alone never invent durable memories', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-session-compiler-'));
   const cwd = join(home, 'work');
   await mkdir(cwd, { recursive: true });
@@ -263,13 +263,13 @@ test('raw compiler output is captured, then retired by hygiene instead of recall
   await runtime.flushed();
   const first = await runtime.engine();
   assert.equal(first.projection.activeFacts(first.scopeId, 20).find(fact => fact.kind === 'failure'), undefined,
-    'raw command output never stays in memory');
+    'the active model decides which observations become facts');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'fail-session'));
   await handlers.get('session_start')!({}, ctx(cwd, 'next-session'));
   const recalled = await handlers.get('before_agent_start')!({
     prompt: 'error TS2688 Cannot find type definition file for node', systemPrompt: 'Base',
   }, ctx(cwd, 'next-session'));
-  assert.doesNotMatch(recalled.message.content, /error TS2688/, 'raw command output is retired by hygiene after the turn');
+  assert.doesNotMatch(recalled.message.content, /error TS2688/, 'unrecorded observations do not become durable facts');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'next-session'));
 });
 

@@ -11,7 +11,7 @@ import { memoryDatabasePath, trustedProjectIds } from '../workspace/project-iden
 import { memoryProjectBindings, registeredMemoryProjectIds } from '../workspace/memory-registry.ts';
 import { daemonStateDir, type DaemonConfig } from './config.ts';
 import { GlobalBudgetLedger } from './budget.ts';
-import { applyMaintenance, planMaintenance, runHygiene, type MaintenanceOptions } from '../retention/maintenance.ts';
+import { applyMaintenance, planMaintenance, type MaintenanceOptions } from '../retention/maintenance.ts';
 import { backfillProject, createSdkCurator, curateProject, readUserMessages, sessionsDirFor, type Curator } from '../curation/curator.ts';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 
@@ -172,7 +172,6 @@ export const runCycle = async (options: CycleOptions): Promise<CycleReport> => {
         }
         await maintainProject(engine, options, upkeep);
       }
-      await runHygiene(engine).catch(() => undefined);
       if (options.curator) {
         const { sessionFile, projectId } = options.config;
         const said = sessionFile && projectId === engine.scopeId ? await readUserMessages(sessionFile) : [];

@@ -1,12 +1,10 @@
 import { cp, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { MemoryEngine } from '../engine.ts';
-import { RAW_FAILURE } from './maintenance.ts';
 
 /**
  * One pass over what is already stored, for memory written before deleting
- * meant deleting: every fact left superseded or contradicted, and every live
- * `failure` that contains raw tool output. Semantic judgments belong to the active model. Planning
+ * meant deleting: every fact left superseded or contradicted, with active facts preserved. Semantic judgments belong to the active model. Planning
  * reads only; running backs the store up first, then purges.
  */
 export type SweepPlan = Readonly<{
@@ -16,9 +14,7 @@ export type SweepPlan = Readonly<{
 
 export const planSweep = async (engine: MemoryEngine): Promise<SweepPlan> => ({
   dead: engine.projection.deadFactIds(engine.scopeId),
-  junk: engine.projection.activeFacts(engine.scopeId, 1_000)
-    .filter(fact => fact.kind === 'failure' && RAW_FAILURE.test(fact.statement))
-    .map(fact => ({ id: fact.id, statement: fact.statement, reason: 'raw tool output' })),
+  junk: [], // Active facts require a model decision; command-like text is still evidence.
 });
 
 export const runSweep = async (engine: MemoryEngine, plan: SweepPlan, backupRoot: string) => {

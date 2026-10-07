@@ -1,8 +1,5 @@
 /** Shared admission for agent capture and daemon publication; never a fail-open volume gate. */
 
-const ROUTINE = /^(ok|okay|done|lgtm|wip|todo|n\/a|thanks|thx)\.?$/iu;
-const TOOL_DUMP = /^(bash|npm|git|pi)\s+(succeeded|failed)\.?$/iu;
-
 export type CaptureAdmission = Readonly<{ accept: boolean; reason: string }>;
 
 export const isNegationOrCorrection = (kind: string, statement: string): boolean =>
@@ -16,7 +13,6 @@ export const admitCapture = (input: Readonly<{
 }>): CaptureAdmission => {
   const statement = input.statement.trim();
   if (!statement) return { accept: false, reason: 'empty' };
-  if (ROUTINE.test(statement) || TOOL_DUMP.test(statement)) return { accept: false, reason: 'routine' };
   if (input.existing.some(item => item.statement === statement)) return { accept: false, reason: 'duplicate' };
   if (isNegationOrCorrection(input.kind, statement)) return { accept: true, reason: 'correction' };
   return { accept: true, reason: 'novel' };

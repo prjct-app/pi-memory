@@ -17,8 +17,6 @@ import type { HistoryPolicy } from '../handoff/history.ts';
 import { capToolOutput, DEFAULT_OUTPUT_CAP_POLICY, isCappedTool, type OutputCapPolicy } from '../handoff/caps.ts';
 import { federatedSearch } from '../retrieval/federated.ts';
 import type { Translator } from '../curation/translator.ts';
-import { nearDuplicateFact } from '../curation/similar.ts';
-import { runHygiene } from '../retention/maintenance.ts';
 import { loadDaemonConfig } from '../daemon/config.ts';
 import { spawnCurationRun } from '../daemon/lifecycle.ts';
 import { admitCapture } from '../retention/capture-gate.ts';
@@ -266,8 +264,8 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     for (const declaration of declarations) {
       // A declared rule is already authoritative text; preserve it verbatim.
       const statement = declaration.quote;
-      // A restated rule is already in memory; a second wording only adds noise.
-      if (nearDuplicateFact(statement, project.projection.activeFacts(project.scopeId, DIGEST_SCAN_LIMIT))) continue;
+      // Only identical authored text is a duplicate; similar wording may change a constraint.
+      if (project.projection.activeFacts(project.scopeId, DIGEST_SCAN_LIMIT).some(fact => fact.statement === statement && fact.kind === declaration.kind)) continue;
       const observationKind = declaration.kind === 'correction' ? 'correction' : 'instruction';
       // Identity stays keyed on what was actually said.
       const identity = sessionObservationIdentity(observationKind, 'user_input', declaration.quote);
@@ -339,29 +337,14 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
   };
 
   // Keep storage and indexing off the send path. Shutdown awaits ordered flushes.
-  const queue: { tail: Promise<void>; inFlight: number; tidied?: object } = { tail: Promise.resolve(), inFlight: 0 };
+  const queue: { tail: Promise<void>; inFlight: number } = { tail: Promise.resolve(), inFlight: 0 };
   const inBackground = (task: () => Promise<void>): Promise<void> => {
     queue.inFlight += 1;
     queue.tail = queue.tail.then(task).catch(() => undefined)
       .finally(() => { queue.inFlight -= 1; });
     return queue.tail;
   };
-  /**
-   * Once per session, after the first turn, retire what can never help and fold
-   * repeats. It rides the same queue as the flush, so it never touches the
-   * prompt path, and it only uses an engine the session already opened.
-   */
-  const tidy = async (): Promise<void> => {
-    const { generation, engine: opened } = get();
-    if (queue.tidied === generation || !opened) return;
-    queue.tidied = generation;
-    const project = await opened.catch(() => undefined);
-    if (project && get().generation === generation) await runHygiene(project);
-  };
-  const flushInBackground = (): Promise<void> => inBackground(async () => {
-    await flushSessionObservations();
-    await tidy();
-  });
+  const flushInBackground = (): Promise<void> => inBackground(flushSessionObservations);
 
   const search: MemorySearch = async request => federatedSearch(await readable(), request);
 
@@ -598,5 +581,15 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     /** Settles once every background observation flush has finished. */
     flushed: (): Promise<void> => queue.tail,
     stagedEvidence: () => get().evidence, currentPrompt: () => get().prompt,
+    userPrompts: () => {
+      const current = get();
+      const branch = current.ctx?.sessionManager.getBranch?.();
+      if (!branch) return [current.prompt];
+      return branch.flatMap(entry => {
+        if (entry.type !== 'message' || entry.message.role !== 'user') return [];
+        const content = entry.message.content;
+        return [typeof content === 'string' ? content : content.filter(part => part.type === 'text').map(part => part.text).join('\n')];
+      });
+    },
   };
 };

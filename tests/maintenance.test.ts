@@ -31,7 +31,7 @@ const vectors: Record<string, number[]> = {
   es: [1, 0, 0], en: [0.96, 0.28, 0], neighbour: [0.4, 0.9, 0], unrelated: [0, 0, 1],
 };
 
-test('maintenance supersedes a duplicate, escalates an instruction and leaves distinct knowledge alone', async t => {
+test('maintenance suggestions never retire or change authored facts', async t => {
   const engine = await engineFor(t);
   const older = await record(engine, 'mueve el ticket a ready to verify y no a done', 'procedure', '2026-01-01T00:00:00.000Z');
   const newer = await record(engine, 'After merging a ticket, add the ready to verify label instead of moving it to Done',
@@ -52,21 +52,14 @@ test('maintenance supersedes a duplicate, escalates an instruction and leaves di
     judge, now: Date.parse('2026-03-01T00:00:00.000Z'),
   });
 
-  assert.deepEqual(plan.supersede.map(item => item.factId), [older.fact.id], 'only the older phrasing is replaced');
-  assert.equal(plan.supersede[0]?.replacementId, newer.fact.id);
-  assert.deepEqual(plan.retire.map(item => item.factId), [rant.fact.id], 'a verbatim outburst is retired, not kept for review');
-  assert.deepEqual(plan.review, [], 'a retired statement needs no review row');
-
-  const applied = await applyMaintenance(engine, plan, { gc: false, now: Date.parse('2026-03-01T00:00:00.000Z') });
-  assert.equal(applied.superseded, 1);
-  assert.equal(applied.retired, 1);
-  assert.deepEqual(applied.gaps, []);
-
-  // Replaced and retired statements are deleted, not kept as history.
-  assert.equal(engine.projection.getFact(older.fact.id), undefined);
-  assert.equal(engine.projection.getFact(rant.fact.id), undefined);
-  assert.equal(engine.projection.getFact(newer.fact.id)?.standing, 'supported', 'the survivor is untouched');
-  assert.equal(engine.projection.getFact(neighbour.fact.id)?.standing, 'supported', 'a distinct rule is never merged');
+  assert.deepEqual(plan.supersede, []);
+  assert.deepEqual(plan.retire, []);
+  assert.deepEqual(plan.review, []);
+  assert.ok(plan.suggestions?.some(item => item.factId === older.fact.id));
+  assert.ok(plan.suggestions?.some(item => item.factId === rant.fact.id));
+  const applied = await applyMaintenance(engine, plan, { gc: false });
+  assert.equal(applied.superseded + applied.retired + applied.reviewed, 0);
+  for (const item of [older, newer, neighbour, rant]) assert.equal(engine.projection.getFact(item.fact.id)?.standing, 'supported');
 });
 
 test('maintenance is a no-op without an encoder and a closed fact is gone for good', async t => {
@@ -91,12 +84,14 @@ test('maintenance honours its action budget', async t => {
     'Locale routing keeps English as the unprefixed default'];
   for (const rule of rules) await record(engine, rule, 'correction', '2026-01-01T00:00:00.000Z');
   const plan = await planMaintenance(engine, { judge, now: Date.parse('2026-03-01T00:00:00.000Z') });
-  assert.equal(plan.review.length, 5);
-  const applied = await applyMaintenance(engine, plan, { maxActions: 2, gc: false });
+  assert.equal(plan.suggestions?.length, 5);
+  assert.equal(plan.review.length, 0);
+  const explicit = { ...plan, suggestions: [], review: plan.suggestions ?? [] };
+  const applied = await applyMaintenance(engine, explicit, { maxActions: 2, gc: false });
   assert.equal(applied.reviewed, 2, 'the budget stops the pass mid-way');
 });
 
-test('a stale auto-derived diagnosis is retired, a used or recent one is kept', async t => {
+test('age and command syntax do not retire observed evidence', async t => {
   const engine = await engineFor(t);
   const now = Date.parse('2026-06-01T00:00:00.000Z');
   const auto = (statement: string, recordedAt: string) => engine.recordFact({
@@ -114,17 +109,13 @@ test('a stale auto-derived diagnosis is retired, a used or recent one is kept', 
   await engine.feedback(useful.fact.id, 'helpful', 'migration enum');
 
   const plan = await planMaintenance(engine, { now });
-  assert.deepEqual(plan.retire.map(item => item.factId).sort(), [stale.fact.id, raw.fact.id].sort(),
-    'the old diagnosis and raw command output are retired');
-
+  assert.deepEqual(plan.retire, []);
   const applied = await applyMaintenance(engine, plan, { gc: false, now });
-  assert.equal(applied.retired, 2);
-  assert.equal(engine.projection.getFact(stale.fact.id), undefined);
-  assert.equal(engine.projection.getFact(recent.fact.id)?.standing, 'supported', 'inside the recall window');
-  assert.equal(engine.projection.getFact(useful.fact.id)?.standing, 'supported', 'a failure that proved useful is kept');
+  assert.equal(applied.retired, 0);
+  for (const item of [stale, raw, recent, useful]) assert.equal(engine.projection.getFact(item.fact.id)?.standing, 'supported');
 });
 
-test('hygiene keeps rules about different commands and untranslated ones, and retires empty ones', async t => {
+test('hygiene preserves different commands, short rules and original languages', async t => {
   const engine = await engineFor(t);
   const github = await record(engine, 'If GitHub MCP fails with an authorization error, run `/mcp auth github` to authenticate.', 'procedure', '2026-01-01T00:00:00.000Z');
   const stripe = await record(engine, 'If Stripe MCP fails with an authorization error, run `/mcp auth stripe` to authenticate.', 'procedure', '2026-01-02T00:00:00.000Z');
@@ -132,7 +123,8 @@ test('hygiene keeps rules about different commands and untranslated ones, and re
   const empty = await record(engine, 'Please use "proxy" instead.', 'correction', '2026-01-04T00:00:00.000Z');
   const plan = planHygiene(engine.projection.activeFacts(engine.scopeId), Date.parse('2026-03-01T00:00:00.000Z'));
   assert.deepEqual(plan.supersede, [], 'different commands are different rules');
-  assert.deepEqual(plan.retire.map(item => item.factId), [empty.fact.id], 'a Spanish rule waits for the curator to rewrite it');
+  assert.deepEqual(plan.retire, []);
+  assert.equal(engine.projection.getFact(empty.fact.id)?.statement, 'Please use "proxy" instead.');
   assert.ok(![github.fact.id, stripe.fact.id].some(id => plan.retire.some(item => item.factId === id)));
 });
 

@@ -1,5 +1,14 @@
 # pi-memory
 
+Memory preserves the active model's decisions. Short quotations and any source
+language are accepted when the quotation exists in a user message on the current
+session branch, including steering. Evidence IDs must still have been observed by
+that session. Word overlap never judges whether the evidence supports a statement.
+
+Automatic cleanup never retires rules because of their length, capitalization,
+age, or similarity to another rule. Optional maintenance scores produce advisory
+candidates; an explicit model decision is required to change a fact's standing.
+
 [![pi-memory — for PI Agent](https://raw.githubusercontent.com/prjct-app/pi-memory/main/docs/cover.png)](https://pi.dev)
 
 Pi-native temporal memory and hybrid retrieval for agents. The extension supplies
