@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-memory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi-native temporal memory and hybrid retrieval for agents.",
   "type": "module",
   "keywords": [
@@ -27,7 +27,7 @@
     "build": "rm -rf build && mkdir -p build && npm pack --ignore-scripts --pack-destination build >/dev/null && tar -xzf build/*.tgz -C build --strip-components=1 && rm -f build/*.tgz",
     "check": "tsc --noEmit && npm run check:immutable",
     "check:immutable": "node --import tsx scripts/check-immutable.ts",
-    "test": "node --import ./tests/isolate.mjs --import tsx --test tests/*.test.ts",
+    "test": "node --import ./tests/isolate.mjs --import tsx --test --test-concurrency=4 tests/*.test.ts",
     "test:integration": "node --import ./tests/isolate.mjs --import tsx --test tests/integration/*.test.ts",
     "eval": "node --import tsx scripts/eval.ts",
     "eval:real": "node --import tsx scripts/eval-real.ts",

@@ -96,7 +96,7 @@ test('a batch commit keeps its other facts when one of them is purged', () => {
   assert.equal(withoutPurged(payload as never, new Set()), payload, 'nothing purged, nothing touched');
 });
 
-test('the sweep deletes what was left dead and the failures Jev calls one run\'s state, after a backup', async t => {
+test('the sweep backs up and deletes closed facts while preserving all active evidence', async t => {
   const { planSweep, runSweep } = await import('../src/retention/sweep.ts');
   const home = await mkdtemp(join(tmpdir(), 'pi-memory-sweep-'));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -110,12 +110,14 @@ test('the sweep deletes what was left dead and the failures Jev calls one run\'s
   const raw = await remember(engine, 'failure', 'bash: echidna: command not found');
   const plan = await planSweep(engine);
   assert.deepEqual(plan.dead, [legacy.id]);
-  assert.deepEqual(plan.junk.map(item => item.id), [raw.id]);
+  assert.deepEqual(plan.junk, []);
   assert.ok(engine.projection.getFact(run.id), 'semantic judgments remain with the active model');
   const done = await runSweep(engine, plan, join(home, 'backups'));
-  assert.equal(done.facts, 2);
+  assert.equal(done.facts, 1);
   assert.ok(done.backup && (await readdir(done.backup)).includes('memory.sqlite'));
   assert.equal(engine.projection.getFact(lesson.id)?.statement, 'Installing with npm corrupts the lockfile; use pnpm install.');
-  for (const id of [legacy.id, raw.id]) assert.equal(engine.projection.getFact(id), undefined);
-  assert.doesNotMatch(await journalText(engine.root), /platypus|echidna/);
+  assert.equal(engine.projection.getFact(legacy.id), undefined);
+  assert.equal(engine.projection.getFact(raw.id)?.statement, raw.statement);
+  assert.doesNotMatch(await journalText(engine.root), /platypus/);
+  assert.match(await journalText(engine.root), /echidna/);
 });

@@ -29,6 +29,8 @@ export type ExtensionMemoryRuntime = Readonly<{
   englishStatement?(text: string, signal?: AbortSignal): Promise<string | undefined>;
   stagedEvidence(): ReadonlyMap<string, EvidenceRef>;
   currentPrompt(): string;
+  /** Actual user messages on the current branch, including steering and pre-compaction turns. */
+  userPrompts?(): readonly string[];
 }>;
 
 const kinds = ['decision', 'fact', 'constraint', 'failure', 'correction', 'procedure', 'preference', 'learning'] as const;
@@ -109,36 +111,15 @@ const required = (value: string | undefined, name: string): string => {
   if (!value?.trim()) throw new Error(`${name} is required for this action.`);
   return value;
 };
-const words = (text: string): Set<string> => new Set((text.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])
-  .filter(word => !['the', 'and', 'for', 'that', 'this', 'with', 'from', 'para', 'con', 'una', 'por'].includes(word)));
-/**
- * Stored statements are English while the conversation often is not, so a quote
- * and the memory it supports are frequently in different languages and share no
- * whole word. Comparing accent-stripped four-character stems keeps the guard
- * working across that gap: identifiers, numbers and cognates such as
- * publicamos/publish or releases/release still match, while an unrelated
- * sentence from elsewhere in the prompt still does not.
- */
-const stems = (text: string): Set<string> => new Set([...words(text)]
-  .map(word => word.normalize('NFD').replace(/\p{Diacritic}/gu, ''))
-  .map(word => word.slice(0, 4)));
-const related = (left: string, right: string): boolean => {
-  const rightWords = words(right);
-  const exact = [...words(left)].filter(word => rightWords.has(word)).length;
-  if (exact >= 2) return true;
-  const rightStems = stems(right);
-  return [...stems(left)].filter(stem => rightStems.has(stem)).length >= 2;
-};
 const loose = (text: string): string => text.normalize('NFC').replace(/[\u2018\u2019\u201A\u2032`´]/gu, "'")
   .replace(/[\u201C\u201D\u201E\u2033«»]/gu, '"').replace(/[\u2013\u2014]/gu, '-').replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
-const verifiedQuote = (quote: string | undefined, prompt: string, statement: string): string | undefined => {
+const verifiedQuote = (quote: string | undefined, prompts: readonly string[]): string | undefined => {
   const value = quote?.trim();
   if (!value) return undefined;
-  if (value.length < 12 || words(value).size < 3) throw new Error('userQuote must contain at least 12 characters and three content words.');
   // Models re-type quotes: collapsed spaces, straight quotes for curly ones, a
   // different case. The words must still be the person's, in their order.
-  if (!prompt.includes(value) && !loose(prompt).includes(loose(value))) throw new Error('userQuote must occur in the current user prompt.');
-  if (!related(value, statement)) throw new Error('userQuote must be related to the memory statement.');
+  if (!prompts.some(prompt => prompt.includes(value) || loose(prompt).includes(loose(value)))) throw new Error('userQuote must occur in a user message on the current session branch.');
+  // Provenance is mechanical; relevance and meaning belong to the active model.
   return value;
 };
 const RESERVED_TAGS = new Set(['sourceDocumentKey', 'sourceRevision', 'sourceAdapter', 'topicId', 'semanticKey']);
@@ -146,6 +127,7 @@ const safeTags = (tags: Readonly<Record<string, string>> | undefined): Record<st
   Object.fromEntries(Object.entries(tags ?? {}).filter(([key]) => !RESERVED_TAGS.has(key)));
 
 export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRuntime): void => {
+  const userPrompts = (): readonly string[] => runtime.userPrompts?.() ?? [runtime.currentPrompt()];
   pi.registerTool({
     name: 'memory_context', label: 'Memory context',
     description: 'Search or inspect bounded project memory; consolidate exact candidates or record positive retrieval feedback.',
@@ -246,9 +228,9 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
           if (!found) throw new Error(`Evidence ${id} was not observed by this session.`);
           return found;
         });
-        const quote = verifiedQuote(params.userQuote, runtime.currentPrompt(), `${fact.statement} ${rationale}`);
-        if (!quote && !evidence.some(item => related(item.excerpt, `${fact.statement} ${rationale}`))) {
-          throw new Error('Resolving memory requires related current-session evidence or an exact user quote.');
+        const quote = verifiedQuote(params.userQuote, userPrompts());
+        if (!quote && !evidence.length) {
+          throw new Error('Resolving memory requires current-session evidence or an exact user quote.');
         }
         await engine.resolveFact(factId, standing, rationale, params.replacementId);
         return result({ status: 'ok', factId, standing });
@@ -265,8 +247,7 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
         if (!found) throw new Error(`Evidence ${id} was not observed by this session.`);
         return found;
       });
-      const quote = verifiedQuote(params.userQuote, runtime.currentPrompt(), statement);
-      const evidenceRelated = evidence.every(item => related(item.excerpt, statement));
+      const quote = verifiedQuote(params.userQuote, userPrompts());
       const allEvidence: EvidenceRef[] = [...evidence, ...(quote ? [{ id: `ev_${randomUUID()}`, origin: 'user_statement' as const,
         provenance: 'declared' as const, contentHash: sha256(quote), excerpt: quote, observedAt: new Date().toISOString() }] : [])];
       const entities = (params.entities ?? []).map(entity => ({ id: `ent_${sha256(`${engine.scopeId}\u0000${entity.type}\u0000${entity.name.toLocaleLowerCase()}`).slice(0, 24)}`,
@@ -276,7 +257,7 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
         ...(params.object ? { object: params.object } : {}), entities, evidence: allEvidence, episodeIds: [],
         confidence: params.confidence ?? (allEvidence.length ? 0.85 : 0.5), ...(params.validAt ? { validAt: params.validAt } : {}),
         ...(params.invalidAt ? { invalidAt: params.invalidAt } : {}), ...(params.supersedes ? { supersedes: params.supersedes } : {}),
-        ...(!evidenceRelated && !quote ? { standing: 'needs_review' as const } : {}), tags: safeTags(params.tags) }, signal,
+        tags: safeTags(params.tags) }, signal,
         runtime.scheduleBackfill ? { dense: false } : {});
       runtime.scheduleBackfill?.(engine);
       return result({ status: 'ok', id: recorded.fact.id, standing: recorded.fact.standing,

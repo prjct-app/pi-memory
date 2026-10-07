@@ -23,7 +23,7 @@ test('model-facing writes require meaningful provenance and cannot forge curatio
     stagedEvidence: () => new Map<string, EvidenceRef>(), currentPrompt: () => prompt,
   });
   const record = tools.find(tool => tool.name === 'memory_record')!;
-  await assert.rejects(record.execute('c1', { action: 'remember', kind: 'decision', statement: prompt, userQuote: 'The' }), /12 characters/);
+  await assert.rejects(record.execute('c1', { action: 'remember', kind: 'decision', statement: prompt, userQuote: 'Invented user instruction' }), /user message on the current session branch/);
   const output = await record.execute('c2', { action: 'remember', kind: 'decision', statement: prompt, userQuote: prompt,
     tags: { topicId: 'forged', semanticKey: 'forged', area: 'storage' } });
   const fact = engine.projection.getFact(output.details.id)!;

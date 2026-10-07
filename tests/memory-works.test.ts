@@ -163,17 +163,13 @@ test('a Spanish conversation still produces an English memory with the original 
   assert.equal(fact.evidence.some(item => item.excerpt === spoken), true);
 });
 
-test('an unrelated sentence from the same prompt is still refused as evidence', async t => {
+test('invented user quotations are refused even when their words resemble the statement', async t => {
   const h = await harness(t, { git: true });
-  const prompt = 'recuerda que nunca publicamos releases sin avisar al equipo, y el cafe de la maquina esta horrible';
-  await h.handlers.get('before_agent_start')!({ prompt, systemPrompt: 'base' }, h.ctx);
-  // Loosening relatedness to work across languages must not turn the quote
-  // check into a formality: an unrelated clause still cannot back a memory.
+  await h.handlers.get('before_agent_start')!({ prompt: 'Never publish before review.', systemPrompt: 'base' }, h.ctx);
   await assert.rejects(h.tools.get('memory_record').execute('wrong', {
-    action: 'remember', kind: 'constraint',
-    statement: 'Never publish a release without warning the team first.',
-    userQuote: 'el cafe de la maquina esta horrible',
-  }), /related to the memory statement/u);
+    action: 'remember', kind: 'constraint', statement: 'Never publish without reviewing the team changes.',
+    userQuote: 'Never publish without reviewing the team changes.',
+  }), /user message on the current session branch/u);
 });
 
 test('failure statements keep the diagnosis and drop red tests and runner framing', () => {
@@ -286,7 +282,27 @@ test('after a compaction the core goes back in without waiting for a typed promp
   assert.equal(h.sent[0].options.triggerTurn, false, 'restoring memory never starts a turn');
 });
 
-test('a declaration that restates a stored rule is not stored twice', async t => {
+test('user quotations include steering and earlier branch messages but never assistant or tool text', async t => {
+  const h = await harness(t, { git: true });
+  const branch: any[] = [{ type: 'message', message: { role: 'user', content: 'No JEV' } }];
+  Object.assign(h.ctx.sessionManager, { getBranch: () => branch });
+  await h.handlers.get('before_agent_start')!({ prompt: 'Implement memory', systemPrompt: 'base' }, h.ctx);
+  branch.push({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Sin traducciones' }] } });
+  branch.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Invented instruction' }] } });
+  for (const quote of ['No JEV', 'Sin traducciones']) {
+    const result = await h.tools.get('memory_record').execute(quote, { action: 'remember', kind: 'constraint', statement: quote, userQuote: quote });
+    assert.equal(result.details.standing, 'supported');
+  }
+  await assert.rejects(h.tools.get('memory_record').execute('forged', { action: 'remember', kind: 'constraint', statement: 'Fake rule', userQuote: 'Invented instruction' }), /user message/);
+  const ctx2 = { ...h.ctx, sessionManager: { getSessionId: () => 'second-session', getBranch: () => [] } };
+  await h.handlers.get('session_shutdown')!({}, h.ctx);
+  await h.handlers.get('session_start')!({}, ctx2);
+  const restored = await h.runtime.engine();
+  assert.ok(restored.projection.activeFacts(restored.scopeId).some(fact => fact.statement === 'No JEV'));
+  await assert.rejects(h.tools.get('memory_record').execute('old-quote', { action: 'remember', statement: 'Different statement', userQuote: 'No JEV' }), /user message/);
+});
+
+test('similar declarations are retained until the active model resolves them', async t => {
   const h = await harness(t, { git: true });
   await h.handlers.get('before_agent_start')!({ prompt: 'remember that we never bulk-generate a content calendar before one representative article passes review', systemPrompt: 'base' }, h.ctx);
   await h.handlers.get('turn_end')!({}, h.ctx);
@@ -296,5 +312,5 @@ test('a declaration that restates a stored rule is not stored twice', async t =>
   await h.runtime.flushed();
   const engine = await h.runtime.engine();
   const stored = engine.projection.activeFacts(engine.scopeId, 50).filter(fact => /content calendar/.test(fact.statement));
-  assert.equal(stored.length, 1);
+  assert.equal(stored.length, 2);
 });
