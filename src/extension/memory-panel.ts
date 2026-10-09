@@ -14,8 +14,6 @@ export type MemorySnapshot = Readonly<{
   curation?: CurationStats;
   sources: readonly (SyncDecision & { last?: SyncRun | null })[];
   error?: string;
-  /** Memory blocks in this session's context, from pi-context-prune. */
-  context?: string;
 }>;
 
 /** What the panel can ask the extension to do. Each returns a one-line result. */
@@ -26,8 +24,6 @@ export type MemoryOps = Readonly<{
   gc(): Promise<string>;
   checkpointWal(): Promise<string>;
   rebuild(): Promise<string>;
-  /** Remove superseded memory from this session's context on the next request. */
-  prune?(): Promise<string>;
 }>;
 
 const STORE = 'store';
@@ -73,7 +69,6 @@ export function memoryPanelSpec(ops: MemoryOps, initial: MemorySnapshot): PanelS
     { key: 'g', label: 'Collect garbage', when: onStore, run: act(STORE, ops.gc) },
     { key: 'w', label: 'Checkpoint WAL', when: onStore, run: act(STORE, ops.checkpointWal) },
     { key: 'R', label: 'Rebuild index', when: onStore, confirm: true, run: act(STORE, ops.rebuild) },
-    ...(ops.prune ? [{ key: 'p', label: 'Prune memory from context', when: onStore, run: act(STORE, ops.prune) }] : []),
   ];
 
   const items = (): PanelItem[] => {
@@ -158,7 +153,6 @@ export function memoryPanelSpec(ops: MemoryOps, initial: MemorySnapshot): PanelS
           { label: 'curation', value: `${(curation?.pending ?? 0) + (curation?.claimed ?? 0)} queued · ${curation?.published ?? 0} published` },
           { label: 'problems', value: `${curation?.failed ?? 0} failed · ${curation?.blocked ?? 0} blocked`, tone: (curation?.failed || curation?.blocked) ? 'warning' : undefined },
           { label: 'cache', value: 'session-references-v2' },
-          ...(snap.context ? [{ label: 'context', value: clean(snap.context) }] : []),
         ],
         sections: [history(STORE)],
       };

@@ -3,6 +3,7 @@
 - Memory is on demand. Before a turn nothing is injected: no snapshot, no recall, and no restore after compaction or a tree move. The agent reads memory with `memory_context`, whose description now says what memory holds and when to look it up.
 - Failed tool results are no longer tagged with an evidence handle. In 94 recent `memory_record` calls, 2 cited one, while the tag was added to 994 failed results.
 - Remove the automatic recall search and its encoder warm-up from the prompt path.
+- Remove the link to pi-context-prune (`/memory prune`, the panel's prune key and context line): with nothing injected, there is no superseded memory to prune.
 
 ## 0.2.3 (2026-10-09)
 

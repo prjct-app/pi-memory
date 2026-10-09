@@ -61,16 +61,3 @@ test('rebuild asks again; an uninitialized project offers only initialize', asyn
   assert.match(fresh.screen(), /i Initialize · \? keys/);
 });
 
-test('the store offers pruning memory from context when pi-context-prune is loaded', async () => {
-  const pruned: string[] = [];
-  const view = open({ ...ready, context: '1.2k tok in context · 0 pruned' }, {
-    prune: async () => { pruned.push('prune'); return 'Prune queued for the next request'; },
-  });
-  assert.match(view.screen(), /context\s+1\.2k tok in context · 0 pruned/);
-  await view.press('p');
-  assert.deepEqual(pruned, ['prune']);
-  const without = open(ready, { prune: undefined });
-  assert.doesNotMatch(without.screen(), /context\s+/, 'no context line without the extension behind it');
-  await without.press('p');
-  assert.deepEqual(pruned, ['prune'], 'and no key');
-});
