@@ -135,7 +135,7 @@ test('one turn flush deduplicates repeated failures by semantic key and summary 
     'a later timestamp for the same semanticKey + summary hash must not requeue analysis');
 });
 
-test('a declared correction is supported and recalled by the next session before agent start', async t => {
+test('a declared correction is supported and found by the next session on request', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-session-correction-'));
   const cwd = join(home, 'work');
   await mkdir(cwd, { recursive: true });
@@ -155,10 +155,10 @@ test('a declared correction is supported and recalled by the next session before
   assert.equal(first.projection.stats().vectors, 0, 'interactive corrections stay lexical and never embed raw session text');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'correction-session'));
   await handlers.get('session_start')!({}, ctx(cwd, 'new-session'));
-  const recalled = await handlers.get('before_agent_start')!({
-    prompt: 'Should this repository use npm or pnpm?', systemPrompt: 'Base',
-  }, ctx(cwd, 'new-session'));
-  assert.match(recalled.message.content, /<project_memory trust="untrusted">[\s\S]*Never use npm; use pnpm/);
+  assert.equal(await handlers.get('before_agent_start')!({ prompt: 'Should this repository use npm or pnpm?', systemPrompt: 'Base' }, ctx(cwd, 'new-session')), undefined,
+    'memory is never injected');
+  const found = await runtime.search({ queries: ['Should this repository use npm or pnpm?'], limit: 4, maxBytes: 2048, dense: false });
+  assert.match(JSON.stringify(found.items), /Never use npm; use pnpm/);
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-session'));
 });
 
@@ -188,7 +188,7 @@ test('a task brief from another agent (pi -p, rpc, a subagent child) never becom
   }
 });
 
-test('an explicit recuerda declaration is supported and recalled by the next session', async t => {
+test('an explicit recuerda declaration is supported and found by the next session on request', async t => {
   const home = await mkdtemp(join(tmpdir(), 'pi-session-remember-'));
   const cwd = join(home, 'work');
   await mkdir(cwd, { recursive: true });
@@ -210,10 +210,10 @@ test('an explicit recuerda declaration is supported and recalled by the next ses
   assert.equal(first.projection.stats().vectors, 0, 'explicit declarations stay lexical and never embed raw prompts');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'remember-session'));
   await handlers.get('session_start')!({}, ctx(cwd, 'new-session'));
-  const recalled = await handlers.get('before_agent_start')!({
-    prompt: 'Should we use Zod for validating the API boundaries?', systemPrompt: 'Base',
-  }, ctx(cwd, 'new-session'));
-  assert.match(recalled.message.content, /<project_memory trust="untrusted">[\s\S]*Remember to use Zod/);
+  assert.equal(await handlers.get('before_agent_start')!({ prompt: 'Should we use Zod for validating the API boundaries?', systemPrompt: 'Base' }, ctx(cwd, 'new-session')), undefined,
+    'memory is never injected');
+  const found = await runtime.search({ queries: ['Should we use Zod for validating the API boundaries?'], limit: 4, maxBytes: 2048, dense: false });
+  assert.match(JSON.stringify(found.items), /Remember to use Zod/);
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-session'));
 });
 
@@ -238,10 +238,10 @@ test('a recuerda declaration retains its language across sessions without transl
   assert.equal(fact.evidence[0]?.excerpt, spoken, 'the Spanish words remain the evidence');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'remember-es'));
   await handlers.get('session_start')!({}, ctx(cwd, 'new-es'));
-  const recalled = await handlers.get('before_agent_start')!({
-    prompt: '¿Cómo validar los límites de la API con Zod?', systemPrompt: 'Base',
-  }, ctx(cwd, 'new-es'));
-  assert.ok(recalled.message.content.includes(spoken));
+  assert.equal(await handlers.get('before_agent_start')!({ prompt: '¿Cómo validar los límites de la API con Zod?', systemPrompt: 'Base' }, ctx(cwd, 'new-es')), undefined,
+    'memory is never injected');
+  const found = await runtime.search({ queries: ['¿Cómo validar los límites de la API con Zod?'], limit: 4, maxBytes: 2048, dense: false });
+  assert.ok(JSON.stringify(found.items).includes(spoken), 'found in its own language');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'new-es'));
 });
 

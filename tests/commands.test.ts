@@ -35,7 +35,7 @@ test('memory command completes every action and configured sync adapter without 
     return items?.map(item => item.value) ?? null;
   };
   assert.deepEqual(await values(''), [
-    'init', 'status', 'sources', 'sync', 'index', 'checkpoint', 'replay', 'rebuild', 'gc', 'prune', 'purge',
+    'init', 'status', 'sources', 'sync', 'index', 'checkpoint', 'replay', 'rebuild', 'gc', 'purge',
     'checkpoint-wal', 'migrate-curated',
   ]);
   assert.deepEqual(await values('st'), ['status']);

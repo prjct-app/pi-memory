@@ -7,7 +7,7 @@ import { createAssistantMessageEventStream, InMemoryCredentialStore, type Assist
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { installMemory } from '../../src/index.ts';
 
-test('public SDK can remember an earlier short user correction and recall it on the next turn', async t => {
+test('public SDK can remember an earlier short user correction; the next turn carries no injected memory', async t => {
   const root = await mkdtemp(join(tmpdir(), 'memory-short-rule-sdk-'));
   await mkdir(join(root, '.git'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -47,7 +47,8 @@ test('public SDK can remember an earlier short user correction and recall it on 
   assert.equal(output.length, 1);
   assert.equal(output[0]?.isError, false, JSON.stringify(output));
   assert.match(JSON.stringify(output[0]?.content), /supported/);
+  const before = seen.length;
   await session.prompt('Continue the task.');
-  assert.match(seen.at(-1) ?? '', /project_memory/);
-  assert.match(seen.at(-1) ?? '', /No auxiliary classifier/);
+  assert.equal(seen.length, before + 1);
+  assert.doesNotMatch(seen.at(-1) ?? '', /memory_snapshot|project_memory|retained_memory/, 'memory is read with memory_context, never injected');
 });

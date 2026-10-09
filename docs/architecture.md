@@ -113,8 +113,8 @@ Thus a future-effective replacement does not retire the current answer early.
 Terminal intervals cannot be reopened in place: record a new fact so the gap in
 validity is not erased. Fact ids are immutable. GC's seven-day grace starts no
 earlier than both resolution time and the end of validity. Retrieval includes
-observation, declared validity and resolution dates; automatic recall explicitly
-warns that publication dates do not establish present applicability.
+observation, declared validity and resolution dates; lookups explicitly warn
+that publication dates do not establish present applicability.
 
 ### Source freshness and retirement
 
@@ -242,9 +242,10 @@ files and every data-bearing cache remain under the project root.
 `memory_record`, retrieval, source sync, checkpoints and maintenance all target
 the same active project authority.
 
-Automatic recall appends a reference-data message; it does not rewrite the system
-prompt. The recall threshold defaults to zero. The active agent can call
-`memory_context` for further evidence or query expansion.
+Nothing is recalled automatically. Before a turn the extension only counts it,
+captures what the person declared and updates the status line; it adds no
+message and never returns a system prompt. The active agent calls
+`memory_context` when memory may matter, with its own queries.
 
 ## Language
 
@@ -310,7 +311,7 @@ in flight.
 
 `pi-session` uses an independent 8-turn/60-second sync cadence. Exact declared
 corrections and secret-free `remember`/`recuerda`/`acuérdate` statements are
-promoted lexically after the turn so the next session can recall a supported
+promoted lexically after the turn so the next session can look up a supported
 fact without waiting for daemon curation. Questions containing those words are
 not declarations. Raw observations are never embedded.
 
