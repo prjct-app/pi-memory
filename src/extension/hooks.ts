@@ -3,6 +3,7 @@ import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { contentText } from '@earendil-works/pi-ai';
 import type { EvidenceRef } from '../contracts/evidence.ts';
 import { factIsValidAt, type MemoryKind } from '../contracts/memory.ts';
 import { renderMemoryEnvelope, type MemoryEnvelope } from '../handoff/memory-envelope.ts';
@@ -588,7 +589,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
       return branch.flatMap(entry => {
         if (entry.type !== 'message' || entry.message.role !== 'user') return [];
         const content = entry.message.content;
-        return [typeof content === 'string' ? content : content.filter(part => part.type === 'text').map(part => part.text).join('\n')];
+        return [contentText(content)];
       });
     },
   };

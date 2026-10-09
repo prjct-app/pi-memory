@@ -1,3 +1,5 @@
+## 0.2.2 (2026-10-07)
+
 ## 0.2.0 (2026-10-06)
 
 - Remove semantic reranking, classifier curation, turn judging and credential setup.
