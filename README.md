@@ -51,9 +51,11 @@ and shared by every project, and only when memory outgrows the prompt block.
 - `memory_record` stores a selective temporal fact, appends a resolution instead
   of rewriting history, or indexes a generic source document.
 
-The extension keeps a bounded, session-local staging window for host tool
-results. A failed tool result carries its staged evidence handle so the agent
-can cite it with `memory_record`; successful results are left untouched.
+Memory never enters the model context on its own: no snapshot, recall or
+evidence tag is injected before or during a turn. The agent reads memory with
+`memory_context` when it decides to. The extension keeps a bounded,
+session-local staging window for host tool results; results reach the model
+exactly as the tool wrote them.
 Exact, secret-free user declarations beginning with `remember`, `recuerda`, or
 `acuérdate` are also stored directly as supported lexical procedures after the
 turn, preserving their original wording and language; corrections

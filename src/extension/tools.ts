@@ -130,7 +130,10 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
   const userPrompts = (): readonly string[] => runtime.userPrompts?.() ?? [runtime.currentPrompt()];
   pi.registerTool({
     name: 'memory_context', label: 'Memory context',
-    description: 'Search or inspect bounded project memory; consolidate exact candidates or record positive retrieval feedback.',
+    description: 'Search or inspect this project\'s memory: decisions, constraints, corrections, procedures, preferences and known failures '
+      + 'recorded in earlier sessions. Nothing from memory reaches you unless you call this: look it up before acting on project conventions, '
+      + 'an earlier decision, or a failure that may have happened before. lookup searches with up to 4 queries; inspect reads ids; '
+      + 'consolidate merges exact candidates; feedback marks a retrieved item used, helpful, wrong or stale.',
     // The model reads the shape; the limits are checked here, on every call.
     parameters: schemaForModel(contextParameters),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -211,7 +214,7 @@ export const installMemoryTools = (pi: ExtensionAPI, runtime: ExtensionMemoryRun
 
   pi.registerTool({
     name: 'memory_record', label: 'Record memory',
-    description: 'Record selective durable knowledge or resolve memory using current-session evidence handles or an exact user quote. Preserve the meaning and language of the statement and rationale; userQuote is kept verbatim as evidence.',
+    description: 'Record selective durable knowledge or resolve memory. Give userQuote only when it quotes the person verbatim; it is kept as evidence. Preserve the meaning and language of the statement and rationale.',
     parameters: schemaForModel(recordParameters),
     async execute(_toolCallId, params, signal) {
       checked(recordValidator(), params, 'memory_record');
