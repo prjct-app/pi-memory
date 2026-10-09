@@ -92,6 +92,24 @@ test('an agent-recorded memory is in the next prompt\'s snapshot without loading
   assert.equal(again.systemPrompt, result.systemPrompt, 'the digest is stable across prompts');
 });
 
+test('a snapshot still in context is not resent; after compaction removes it, it is', async t => {
+  const h = await harness(t, { git: true });
+  await h.tools.get('memory_record').execute('c1', {
+    action: 'remember', kind: 'decision', statement: 'Compiled Pi builds live in the agent builds directory outside repositories.',
+  });
+  const transcript: any[] = [];
+  const ctx = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, buildSessionProjection: () => ({ messages: transcript }) } };
+  const first = await h.handlers.get('before_agent_start')!({ prompt: 'where do builds go?', systemPrompt: 'base' }, ctx);
+  assert.equal(first.systemPrompt, undefined, 'a returned prompt would be forced for this turn only');
+  assert.match(first.message.content, /<memory_snapshot[\s\S]*Compiled Pi builds live/);
+  transcript.push({ role: 'user', content: 'where do builds go?' }, { role: 'custom', ...first.message, timestamp: 1 });
+  const second = await h.handlers.get('before_agent_start')!({ prompt: 'otra pregunta', systemPrompt: 'base' }, ctx);
+  assert.equal(second, undefined, 'the same snapshot is already in context');
+  transcript.splice(0, transcript.length, { role: 'compactionSummary', summary: 'earlier work', timestamp: 2 });
+  const third = await h.handlers.get('before_agent_start')!({ prompt: 'y ahora?', systemPrompt: 'base' }, ctx);
+  assert.deepEqual(third.message.content, first.message.content, 'resent once compaction removed it');
+});
+
 test('a remember declaration initializes repository memory; a tool failure alone does not', async t => {
   const failing = await harness(t, { git: true });
   await failing.handlers.get('tool_result')!({ toolName: 'bash', toolCallId: 'f1', isError: true,
@@ -198,7 +216,7 @@ test('memory larger than the digest gets vectors in the background and per-promp
   assert.ok(engine.projection.stats().vectors > 0, 'vectors once memory exceeds the digest');
   const result = await h.handlers.get('before_agent_start')!({ prompt: 'why do deploys to the staging cluster fail?', systemPrompt: 'base' }, h.ctx);
   assert.doesNotMatch(result.message.content, /Service \d+ runbook/, 'facts are not in the core snapshot');
-  assert.doesNotMatch(result.systemPrompt, /kubeconfig context/, 'failures never ride in the system prompt');
+  assert.equal(result.systemPrompt, undefined, 'failures never ride in the system prompt');
   assert.match(result.message?.content ?? '', /<retained_memory[\s\S]*kubeconfig context points at production/);
 });
 

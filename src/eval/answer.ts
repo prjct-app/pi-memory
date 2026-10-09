@@ -1,13 +1,10 @@
 import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
-import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
+import { contentText, type Api, type Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CurationBlockError } from '../curation/types.ts';
 import type { AnswerProvider, AnswerRequest, AnswerResult } from './comparison.ts';
 
 const SYSTEM = 'Answer only from the provided evidence and prior facts. Quote supporting excerpts. Do not invent claims.';
-
-const textOf = (message: AssistantMessage): string =>
-  message.content.flatMap(block => 'type' in block && block.type === 'text' && 'text' in block ? [String(block.text)] : []).join('\n');
 
 export const createSdkAnswerProvider = async (options: Readonly<{
   provider: string; model: string; maxOutputChars?: number;
@@ -32,7 +29,7 @@ export const createSdkAnswerProvider = async (options: Readonly<{
       if (message.stopReason === 'error' || message.stopReason === 'aborted') {
         return { text: '', inputTokens: message.usage?.input ?? 0, outputTokens: message.usage?.output ?? 0, failed: true };
       }
-      const text = textOf(message).slice(0, maxOutputChars);
+      const text = contentText(message.content).slice(0, maxOutputChars);
       return {
         text,
         inputTokens: message.usage?.input ?? Math.ceil(request.evidence.length / 4),

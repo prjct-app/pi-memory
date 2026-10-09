@@ -1,5 +1,5 @@
 import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
-import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
+import { contentText, type Api, type Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CurationBlockError, type AnalysisResult, type Analyzer, type EvidenceBundle } from './types.ts';
 import { extractJsonObject, parseProposal } from './validate.ts';
@@ -37,9 +37,6 @@ Rules:
 - Never assign provenance. The publisher derives it from the source boundary; you are not a host observer.
 - Preserve the source language, meaning, qualifications and force. Quote the source verbatim in excerpt; excerpts are evidence and are never translated.`;
 
-const textOf = (message: AssistantMessage): string =>
-  message.content.flatMap(block => 'type' in block && block.type === 'text' && 'text' in block ? [String(block.text)] : []).join('\n');
-
 const bundlePrompt = (bundle: EvidenceBundle): string => JSON.stringify({
   identity: bundle.identity,
   currentTopic: bundle.currentTopic ?? null,
@@ -66,7 +63,7 @@ export const createSdkAnalyzer = async (options: Readonly<{
       if (message.stopReason === 'error' || message.stopReason === 'aborted') {
         throw new Error(message.errorMessage || `Analysis ${message.stopReason}.`);
       }
-      const output = textOf(message);
+      const output = contentText(message.content);
       if (Buffer.byteLength(output, 'utf8') > maxOutputChars) throw new Error('Analysis output exceeded the size limit.');
       const proposal = parseProposal(extractJsonObject(output), bundle);
       return {

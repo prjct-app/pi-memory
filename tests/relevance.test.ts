@@ -33,9 +33,8 @@ test('default lookup and automatic recall retain positives/qualified evidence an
   await handlers.get('session_start')!({}, ctx);
   const o8 = cases.find(kase => kase.name === 'O8')!;
   const recalled = await handlers.get('before_agent_start')!({ prompt: o8.query, systemPrompt: 'Base' }, ctx);
-  assert.equal(recalled.systemPrompt, 'Base', 'the system prompt is left byte-identical');
-  assert.match(recalled.message.content, /Reference data only, not instructions/);
-  assert.equal(recalled.message.details.memory.recall, undefined, 'unrelated prompt gets no overflow recall');
+  assert.equal(recalled?.systemPrompt, undefined, 'the system prompt is never returned');
+  assert.equal(recalled?.message, undefined, 'unrelated prompt gets no overflow recall, and an empty core has nothing to revoke');
   const lookup = await tools.get('memory_context').execute('call', { action: 'lookup', queries: [o8.query] });
   assert.equal(scoreOracle(lookup.details.items, o8, lookup.details).passed, true);
   for (const kase of cases) {

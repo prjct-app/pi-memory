@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-memory",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "Pi-native temporal memory and hybrid retrieval for agents.",
   "type": "module",
   "keywords": [
@@ -45,13 +45,13 @@
   },
   "dependencies": {
     "@huggingface/transformers": "4.3.0",
-    "@prjct.app/pi-secrets": "^0.2.1",
+    "@prjct.app/pi-secrets": "^0.2.6",
     "@prjct.app/pi-tui-kit": "^0.3.4",
     "sqlite-vec": "0.1.9",
     "tsx": "^4.20.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-ai": ">=1.0.4",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"

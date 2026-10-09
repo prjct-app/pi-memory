@@ -1,5 +1,5 @@
 import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
-import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
+import { contentText, type Api, type Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
@@ -44,9 +44,6 @@ Return ONLY a JSON object: {"actions":[...]}. Each action is one of:
 - {"op":"add","kind":"correction|constraint|preference|decision|procedure","statement":"...","quote":"...","reason":"..."} for a durable rule the user stated or corrected in userMessages that no existing rule covers: how the project must look, be built, be written or be delivered. The statement preserves the user's language and meaning; the quote is the user's exact words, copied verbatim from one message. Corrections the user had to repeat matter most. Do not add task requests, one-time feedback on a single screen, or anything specific to this session only.
 If an added rule refines an existing one, supersede the existing rule by the new one's position instead of keeping both: add it, then supersede the old id with "by":"new".
 Leave every other rule alone. Never invent a rule. Prefer fewer actions when unsure.`;
-
-const textOf = (message: AssistantMessage): string =>
-  message.content.flatMap(block => 'type' in block && block.type === 'text' && 'text' in block ? [String(block.text)] : []).join('\n');
 
 /** Only actions about rules that were shown, with the fields each op needs. */
 export const parseCuration = (value: unknown, rules: readonly Rule[], userMessages: readonly string[] = []): CurationAction[] => {
@@ -95,7 +92,7 @@ export const createSdkCurator = async (options: Readonly<{ provider: string; mod
         messages: [{ role: 'user', content: JSON.stringify(await protectOutboundData({ rules, userMessages })), timestamp: Date.now() }],
       }, { maxTokens: Math.min(model.maxTokens, 32768), reasoning: 'high', ...(signal === undefined ? {} : { signal }) });
       if (message.stopReason === 'error' || message.stopReason === 'aborted') throw new Error(message.errorMessage || `Curation ${message.stopReason}.`);
-      return parseCuration(extractJsonObject(textOf(message)), rules, userMessages);
+      return parseCuration(extractJsonObject(contentText(message.content)), rules, userMessages);
     },
   };
 };
