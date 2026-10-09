@@ -8,6 +8,20 @@ export const renderMemoryEnvelope = (memory: MemoryEnvelope, snapshot = true, re
   ...(recall && memory.recall ? [memory.recall] : []),
 ].join('\n\n');
 
+type DeliveryState = { revision: string | undefined; recalls: Set<string> };
+
+/** Which parts of `memory` are new after the deliveries folded into `state`; folds this one in. */
+const nextDelivery = (state: DeliveryState, memory: MemoryEnvelope): { snapshot: boolean; recall: boolean } => {
+  const snapshot = state.revision !== memory.revision;
+  if (snapshot) {
+    state.revision = memory.revision;
+    state.recalls.clear();
+  }
+  const recall = Boolean(memory.recall && !state.recalls.has(memory.recall));
+  if (memory.recall) state.recalls.add(memory.recall);
+  return { snapshot, recall };
+};
+
 /** Recompute from retained context, never from a process-lifetime delivery ledger.
  * Keep first-copy bytes and compare only the latest snapshot: A → B → A is a
  * new delivery, not a repeat of the obsolete A. Proposed messages count only
@@ -15,7 +29,7 @@ export const renderMemoryEnvelope = (memory: MemoryEnvelope, snapshot = true, re
  */
 export const uniqueMemory = (messages: readonly HandoffMessage[],
   onReplacement?: (replacement: HandoffMessage, source: HandoffMessage) => void): readonly HandoffMessage[] => {
-  const state = { revision: undefined as string | undefined, recalls: new Set<string>() };
+  const state: DeliveryState = { revision: undefined, recalls: new Set<string>() };
   return messages.flatMap(message => {
     const custom = message as EnvelopeMessage;
     if (custom.customType !== 'pi-memory-recall') return [message];
@@ -26,13 +40,7 @@ export const uniqueMemory = (messages: readonly HandoffMessage[],
       state.recalls.add(key);
       return [message];
     }
-    const snapshot = state.revision !== memory.revision;
-    if (snapshot) {
-      state.revision = memory.revision;
-      state.recalls.clear();
-    }
-    const recall = Boolean(memory.recall && !state.recalls.has(memory.recall));
-    if (memory.recall) state.recalls.add(memory.recall);
+    const { snapshot, recall } = nextDelivery(state, memory);
     if (!snapshot && !recall) return [];
     const content = renderMemoryEnvelope(memory, snapshot, recall);
     if (content === message.content) return [message];
@@ -40,4 +48,19 @@ export const uniqueMemory = (messages: readonly HandoffMessage[],
     onReplacement?.(replacement, message);
     return [replacement];
   });
+};
+
+/** The envelope text the model does not already have in `retained`, or
+ * undefined when it would repeat what is there. A context with no snapshot
+ * counts as holding `baseline`, so an empty memory has nothing to revoke.
+ */
+export const unseenMemory = (retained: readonly HandoffMessage[], memory: MemoryEnvelope, baseline?: string): string | undefined => {
+  const state: DeliveryState = { revision: baseline, recalls: new Set<string>() };
+  for (const message of retained) {
+    const custom = message as EnvelopeMessage;
+    const earlier = custom.customType === 'pi-memory-recall' ? custom.details?.memory : undefined;
+    if (earlier?.version === 1) nextDelivery(state, earlier);
+  }
+  const { snapshot, recall } = nextDelivery(state, memory);
+  return snapshot || recall ? renderMemoryEnvelope(memory, snapshot, recall) : undefined;
 };

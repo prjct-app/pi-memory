@@ -1,5 +1,5 @@
 import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
-import type { Api, AssistantMessage, Model } from '@earendil-works/pi-ai';
+import { contentText, type Api, type Model } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 
 /**
@@ -24,9 +24,6 @@ Rules:
   prohibition, a preference stays a preference.
 - If the input is already English, return it unchanged.`;
 
-const textOf = (message: AssistantMessage): string =>
-  message.content.flatMap(block => 'type' in block && block.type === 'text' && 'text' in block ? [String(block.text)] : []).join('\n');
-
 export class TranslationUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -44,7 +41,7 @@ const complete = async (
   if (message.stopReason === 'error' || message.stopReason === 'aborted') {
     throw new TranslationUnavailableError(message.errorMessage || `Translation ${message.stopReason}.`);
   }
-  const output = textOf(message).trim();
+  const output = contentText(message.content).trim();
   // A translation that comes back empty, or wildly longer than its input, is
   // the model having answered the sentence instead of translating it.
   if (!output || output.length > Math.max(400, text.length * 3)) {
