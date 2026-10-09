@@ -12,7 +12,6 @@ import type { HistoryPolicy } from './handoff/history.ts';
 import type { OutputCapPolicy } from './handoff/caps.ts';
 import { installMemoryTools } from './extension/tools.ts';
 import { createChildView, publishChildView } from './extension/child-view.ts';
-import { contextLine, contextPrune, queueContextPrune } from './extension/context-prune.ts';
 import { planSweep, runSweep } from './retention/sweep.ts';
 import { runGc } from './retention/gc.ts';
 import { registerKnownSources, scopedEngines, type SourceInstallOptions } from './sources/install.ts';
@@ -43,8 +42,8 @@ export type MemoryExtensionOptions = Readonly<{
   sources?: Omit<SourceInstallOptions, 'home'>;
 }>;
 
-const USAGE = 'Usage: /memory init | status | sources | sync [adapter] | index {json} | replay | rebuild | gc | prune | purge [confirm] | checkpoint-wal | migrate-curated | checkpoint {json}';
-const ACTIONS = new Set(['init', 'setup', 'status', 'sources', 'sync', 'index', 'replay', 'rebuild', 'gc', 'prune', 'purge', 'checkpoint-wal', 'migrate-curated', 'checkpoint']);
+const USAGE = 'Usage: /memory init | status | sources | sync [adapter] | index {json} | replay | rebuild | gc | purge [confirm] | checkpoint-wal | migrate-curated | checkpoint {json}';
+const ACTIONS = new Set(['init', 'setup', 'status', 'sources', 'sync', 'index', 'replay', 'rebuild', 'gc', 'purge', 'checkpoint-wal', 'migrate-curated', 'checkpoint']);
 const ACTION_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: 'init', label: 'init', description: 'Initialize memory for this checkout' },
   { value: 'status', label: 'status', description: 'Show project memory status' },
@@ -55,7 +54,6 @@ const ACTION_COMPLETIONS: readonly AutocompleteItem[] = [
   { value: 'replay', label: 'replay', description: 'Replay durable memory history' },
   { value: 'rebuild', label: 'rebuild', description: 'Rebuild the searchable projection' },
   { value: 'gc', label: 'gc', description: 'Run bounded memory garbage collection' },
-  { value: 'prune', label: 'prune', description: 'Remove superseded memory from this session\'s context now' },
   { value: 'purge', label: 'purge', description: 'Show what dead or junk memory would be deleted for good; purge confirm deletes it' },
   { value: 'checkpoint-wal', label: 'checkpoint-wal', description: 'Checkpoint the SQLite write-ahead log' },
   { value: 'migrate-curated', label: 'migrate-curated', description: 'Queue legacy documents for curation' },
@@ -213,7 +211,6 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
                 last: engine.projection.syncState(adapter) ?? null,
               })),
               ...(lastFault.message ? { error: lastFault.message } : {}),
-              ...(contextPrune() ? { context: contextLine(contextPrune()?.status()) } : {}),
             };
           },
           init: async () => {
@@ -233,7 +230,6 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
           gc: async () => `GC · ${summary(await runGc(await runtime.engine()))}`,
           checkpointWal: async () => `WAL checkpoint · ${summary((await runtime.engine()).projection.checkpointWal())}`,
           rebuild: async () => `Rebuilt · ${summary(await (await runtime.engine()).rebuild())}`,
-          ...(contextPrune() ? { prune: async () => queueContextPrune(ctx) } : {}),
         };
         try {
           await openPanel(ctx, memoryPanelSpec(ops, await ops.load()));
@@ -259,12 +255,6 @@ export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions 
           `source ${initialized.binding.source}`,
           `location ${initialized.binding.location}`,
         ]));
-        return;
-      }
-      if (action === 'prune') {
-        if (target) throw new Error('Usage: /memory prune');
-        // Context, not the store: it needs no initialized project.
-        await show(resultModel('memory · prune', [queueContextPrune(ctx)]));
         return;
       }
       if (action === 'purge') {

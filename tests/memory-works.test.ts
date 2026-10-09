@@ -74,40 +74,18 @@ test('outside a git repository a record explains why and nothing is created', as
   assert.equal(await resolveMemoryProject(h.cwd, h.home), undefined);
 });
 
-test('an agent-recorded memory is in the next prompt\'s snapshot without loading an encoder', async t => {
+test('an agent-recorded memory is found on request and never injected before a turn', async t => {
   const h = await harness(t, { git: true });
-  const embedded = { calls: 0 };
-  const engine0 = await h.tools.get('memory_record').execute('c1', {
+  const recorded = await h.tools.get('memory_record').execute('c1', {
     action: 'remember', kind: 'decision', statement: 'Compiled Pi builds live in the agent builds directory outside repositories.',
   });
-  assert.equal(engine0.details.status, 'ok');
-  const engine = await h.runtime.engine();
-  const original = (engine as any).vector.provider.embed.bind((engine as any).vector.provider);
-  (engine as any).vector.provider.embed = async (...args: any[]) => { embedded.calls += 1; return original(...args); };
-  const result = await h.handlers.get('before_agent_start')!({ prompt: '¿dónde quedan los artefactos compilados?', systemPrompt: 'base' }, h.ctx);
-  assert.match(result.message.content, /<project_memory trust="untrusted">[\s\S]*- decision \(unconfirmed\): Compiled Pi builds live/);
-  assert.equal(result.message.details.memory.recall, undefined, 'the snapshot already carries the whole memory');
-  assert.equal(embedded.calls, 0, 'no encoder for memory that fits the digest');
-  const again = await h.handlers.get('before_agent_start')!({ prompt: 'otra pregunta', systemPrompt: 'base' }, h.ctx);
-  assert.equal(again.systemPrompt, result.systemPrompt, 'the digest is stable across prompts');
-});
-
-test('a snapshot still in context is not resent; after compaction removes it, it is', async t => {
-  const h = await harness(t, { git: true });
-  await h.tools.get('memory_record').execute('c1', {
-    action: 'remember', kind: 'decision', statement: 'Compiled Pi builds live in the agent builds directory outside repositories.',
-  });
-  const transcript: any[] = [];
-  const ctx = { ...h.ctx, sessionManager: { ...h.ctx.sessionManager, buildSessionProjection: () => ({ messages: transcript }) } };
-  const first = await h.handlers.get('before_agent_start')!({ prompt: 'where do builds go?', systemPrompt: 'base' }, ctx);
-  assert.equal(first.systemPrompt, undefined, 'a returned prompt would be forced for this turn only');
-  assert.match(first.message.content, /<memory_snapshot[\s\S]*Compiled Pi builds live/);
-  transcript.push({ role: 'user', content: 'where do builds go?' }, { role: 'custom', ...first.message, timestamp: 1 });
-  const second = await h.handlers.get('before_agent_start')!({ prompt: 'otra pregunta', systemPrompt: 'base' }, ctx);
-  assert.equal(second, undefined, 'the same snapshot is already in context');
-  transcript.splice(0, transcript.length, { role: 'compactionSummary', summary: 'earlier work', timestamp: 2 });
-  const third = await h.handlers.get('before_agent_start')!({ prompt: 'y ahora?', systemPrompt: 'base' }, ctx);
-  assert.deepEqual(third.message.content, first.message.content, 'resent once compaction removed it');
+  assert.equal(recorded.details.status, 'ok');
+  for (const prompt of ['¿dónde quedan los artefactos compilados?', 'otra pregunta']) {
+    assert.equal(await h.handlers.get('before_agent_start')!({ prompt, systemPrompt: 'base' }, h.ctx), undefined, 'no snapshot or recall');
+  }
+  assert.deepEqual(h.sent, [], 'nothing is sent to the session');
+  const lookup = await h.tools.get('memory_context').execute('l1', { action: 'lookup', queries: ['Where do compiled Pi builds live?'] });
+  assert.match(JSON.stringify(lookup.details.items), /Compiled Pi builds live/);
 });
 
 test('a remember declaration initializes repository memory; a tool failure alone does not', async t => {
@@ -199,7 +177,7 @@ test('failure statements keep the diagnosis and drop red tests and runner framin
   assert.equal(sessionFailureStatement('bash failed\nall good here'), '');
 });
 
-test('memory larger than the digest gets vectors in the background and per-prompt recall for the rest', async t => {
+test('memory larger than the digest gets vectors in the background and memory_context finds the rest', async t => {
   const h = await harness(t, { git: true });
   for (const index of Array.from({ length: 40 }, (_, i) => i)) {
     await h.tools.get('memory_record').execute(`c${index}`, {
@@ -214,10 +192,9 @@ test('memory larger than the digest gets vectors in the background and per-promp
   const deadline = Date.now() + 5_000;
   while (engine.projection.stats().vectors === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
   assert.ok(engine.projection.stats().vectors > 0, 'vectors once memory exceeds the digest');
-  const result = await h.handlers.get('before_agent_start')!({ prompt: 'why do deploys to the staging cluster fail?', systemPrompt: 'base' }, h.ctx);
-  assert.doesNotMatch(result.message.content, /Service \d+ runbook/, 'facts are not in the core snapshot');
-  assert.equal(result.systemPrompt, undefined, 'failures never ride in the system prompt');
-  assert.match(result.message?.content ?? '', /<retained_memory[\s\S]*kubeconfig context points at production/);
+  assert.equal(await h.handlers.get('before_agent_start')!({ prompt: 'why do deploys to the staging cluster fail?', systemPrompt: 'base' }, h.ctx), undefined);
+  const lookup = await h.tools.get('memory_context').execute('l1', { action: 'lookup', queries: ['why do deploys to the staging cluster fail?'] });
+  assert.match(JSON.stringify(lookup.details.items), /kubeconfig context points at production/);
 });
 
 test('memory tools are hidden outside repositories and restored inside one', async t => {
@@ -272,32 +249,14 @@ test('a close and distinctive dense match passes the relevance gate for a long n
   assert.deepEqual([...relevantKeys(query, candidates, statistics, new Map([['builds', 0.69]]))], [], 'one scored candidate cannot show discrimination');
 });
 
-test('the core snapshot carries rules only, and a new fact does not resend it', async t => {
-  const h = await harness(t, { git: true });
-  await h.tools.get('memory_record').execute('r1', {
-    action: 'remember', kind: 'constraint', statement: 'Open every pull request against the develop branch, never main.',
-  });
-  const first = await h.handlers.get('before_agent_start')!({ prompt: 'ship it', systemPrompt: 'base' }, h.ctx);
-  assert.match(first.message.content, /constraint[^\n]*develop branch/);
-  await h.tools.get('memory_record').execute('f1', {
-    action: 'remember', kind: 'fact', statement: 'The staging database snapshot is refreshed every Monday at noon.',
-  });
-  const second = await h.handlers.get('before_agent_start')!({ prompt: 'ship it again', systemPrompt: 'base' }, h.ctx);
-  assert.doesNotMatch(second.message.content, /<project_memory[^]*staging database/, 'facts never ride in the core');
-  assert.equal(second.message.details.memory.revision, first.message.details.memory.revision,
-    'the revision follows the core, so uniqueMemory drops the repeated snapshot');
-});
-
-test('after a compaction the core goes back in without waiting for a typed prompt', async t => {
+test('a compaction or tree move sends no memory into the session', async t => {
   const h = await harness(t, { git: true });
   await h.tools.get('memory_record').execute('r1', {
     action: 'remember', kind: 'procedure', statement: 'After merging, label the Linear ticket ready to verify instead of moving it to Done.',
   });
-  await h.handlers.get('session_compact')!({}, h.ctx);
-  assert.equal(h.sent.length, 1);
-  assert.equal(h.sent[0].message.customType, 'pi-memory-recall');
-  assert.match(h.sent[0].message.content, /ready to verify/);
-  assert.equal(h.sent[0].options.triggerTurn, false, 'restoring memory never starts a turn');
+  assert.equal(h.handlers.get('session_compact'), undefined);
+  assert.equal(h.handlers.get('session_tree'), undefined);
+  assert.deepEqual(h.sent, []);
 });
 
 test('user quotations include steering and earlier branch messages but never assistant or tool text', async t => {

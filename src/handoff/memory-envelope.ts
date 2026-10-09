@@ -50,17 +50,3 @@ export const uniqueMemory = (messages: readonly HandoffMessage[],
   });
 };
 
-/** The envelope text the model does not already have in `retained`, or
- * undefined when it would repeat what is there. A context with no snapshot
- * counts as holding `baseline`, so an empty memory has nothing to revoke.
- */
-export const unseenMemory = (retained: readonly HandoffMessage[], memory: MemoryEnvelope, baseline?: string): string | undefined => {
-  const state: DeliveryState = { revision: baseline, recalls: new Set<string>() };
-  for (const message of retained) {
-    const custom = message as EnvelopeMessage;
-    const earlier = custom.customType === 'pi-memory-recall' ? custom.details?.memory : undefined;
-    if (earlier?.version === 1) nextDelivery(state, earlier);
-  }
-  const { snapshot, recall } = nextDelivery(state, memory);
-  return snapshot || recall ? renderMemoryEnvelope(memory, snapshot, recall) : undefined;
-};
