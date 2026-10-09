@@ -269,7 +269,7 @@ test('tool observations alone never invent durable memories', async t => {
   const recalled = await handlers.get('before_agent_start')!({
     prompt: 'error TS2688 Cannot find type definition file for node', systemPrompt: 'Base',
   }, ctx(cwd, 'next-session'));
-  assert.doesNotMatch(recalled.message.content, /error TS2688/, 'unrecorded observations do not become durable facts');
+  assert.doesNotMatch(recalled?.message?.content ?? '', /error TS2688/, 'unrecorded observations do not become durable facts');
   await handlers.get('session_shutdown')!({}, ctx(cwd, 'next-session'));
 });
 

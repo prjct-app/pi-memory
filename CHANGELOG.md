@@ -1,3 +1,8 @@
+## 0.2.3 (2026-10-09)
+
+- Send the memory snapshot only when the retained context lacks it: an unchanged snapshot is no longer repeated every turn, a new recall rides alone, and an empty memory with nothing to revoke sends nothing.
+- Never return `systemPrompt` from `before_agent_start`. Pi treats any returned prompt, even an unchanged one, as a forced prompt for that turn only.
+
 ## 0.2.2 (2026-10-07)
 
 ## 0.2.0 (2026-10-06)

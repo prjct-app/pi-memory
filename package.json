@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-memory",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Pi-native temporal memory and hybrid retrieval for agents.",
   "type": "module",
   "keywords": [

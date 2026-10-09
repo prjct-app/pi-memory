@@ -6,7 +6,8 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { contentText } from '@earendil-works/pi-ai';
 import type { EvidenceRef } from '../contracts/evidence.ts';
 import { factIsValidAt, type MemoryKind } from '../contracts/memory.ts';
-import { renderMemoryEnvelope, type MemoryEnvelope } from '../handoff/memory-envelope.ts';
+import { unseenMemory, type MemoryEnvelope } from '../handoff/memory-envelope.ts';
+import type { HandoffMessage } from '../handoff/turns.ts';
 import { hostEvidence, MemoryEngine } from '../engine.ts';
 import type { EmbeddingProvider } from '../vector/providers.ts';
 import { CORE_DIGEST_BYTES, CORE_KINDS, memoryDigest, memoryStatusLine } from './digest.ts';
@@ -96,6 +97,8 @@ export const recallQueries = (prompt: string): string[] => {
 const NOT_INITIALIZED = /not initialized/iu;
 /** Facts considered for the digest; far more than fit its byte budget. */
 const DIGEST_SCAN_LIMIT = 500;
+/** The revision of an empty snapshot; a context without any snapshot holds the same. */
+const EMPTY_REVISION = sha256('');
 export const isNotInitialized = (error: unknown): boolean => error instanceof Error && NOT_INITIALIZED.test(error.message);
 
 const retainedJson = (value: unknown): string => JSON.stringify(value)
@@ -411,11 +414,21 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     const digest = memoryDigest(facts, Date.now(), CORE_DIGEST_BYTES, CORE_KINDS);
     return { facts, digest, small: memoryDigest(facts).complete, revision: sha256(digest.block ?? '') };
   };
-  const memoryMessage = (revision: string, block: string | undefined, recall?: string, items = 0, omitted = 0) => {
+  /** What the next request carries, compaction-aware. Fixtures without a session carry nothing. */
+  const retainedMessages = (ctx: ExtensionContext): readonly HandoffMessage[] => {
+    try { return ctx.sessionManager.buildSessionProjection?.().messages ?? []; } catch { return []; }
+  };
+  /**
+   * Only the part of the envelope the retained context lacks: an unchanged
+   * snapshot is not resent every turn, and an empty memory with no earlier
+   * snapshot to revoke sends nothing. Undefined when nothing is new.
+   */
+  const memoryMessage = (ctx: ExtensionContext, revision: string, block: string | undefined, recall?: string, items = 0, omitted = 0) => {
     const memory: MemoryEnvelope = { version: 1, revision,
       snapshot: block ?? 'No eligible facts in this snapshot.', ...(recall ? { recall } : {}) };
-    return { customType: 'pi-memory-recall', content: renderMemoryEnvelope(memory), display: false,
-      details: { memory, items, omitted } };
+    const content = unseenMemory(retainedMessages(ctx), memory, EMPTY_REVISION);
+    if (content === undefined) return undefined;
+    return { customType: 'pi-memory-recall', content, display: false, details: { memory, items, omitted } };
   };
 
   /**
@@ -423,16 +436,16 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
    * result) never reach before_agent_start. After the window is rebuilt the core
    * goes back in right away, so those turns do not run without the rules.
    */
-  const restoreCore = async (): Promise<void> => {
+  const restoreCore = async (ctx: ExtensionContext): Promise<void> => {
     const current = get();
     const project = await engine().catch(() => undefined);
     if (!project || get().generation !== current.generation) return;
     const { digest, revision } = coreSnapshot(project);
-    if (!digest.block) return;
-    pi.sendMessage(memoryMessage(revision, digest.block), { triggerTurn: false });
+    const message = memoryMessage(ctx, revision, digest.block);
+    if (message) pi.sendMessage(message, { triggerTurn: false });
   };
-  pi.on('session_compact', async () => { await restoreCore().catch(() => undefined); });
-  pi.on('session_tree', async () => { await restoreCore().catch(() => undefined); });
+  pi.on('session_compact', async (_event, ctx) => { await restoreCore(ctx).catch(() => undefined); });
+  pi.on('session_tree', async (_event, ctx) => { await restoreCore(ctx).catch(() => undefined); });
 
   pi.on('before_agent_start', async (event, ctx) => {
     const current = get();
@@ -440,7 +453,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     void flushInBackground();
     set({ ctx, prompt: event.prompt });
     await countTurn(ctx).catch(() => undefined);
-    if (stale()) return { systemPrompt: event.systemPrompt };
+    if (stale()) return undefined;
     const prompt = clipSessionSummary(event.prompt);
     const observedAt = new Date().toISOString();
     const correction = declaredCorrectionQuote(event.prompt);
@@ -463,20 +476,20 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
       }
     }
     const project = await engine().catch(() => undefined);
-    if (stale()) return { systemPrompt: event.systemPrompt };
-    // No system prompt edits: a per-turn system prompt is dropped on automated
-    // turns (subagent results, self-compact handoffs), which flipped the cached
-    // prefix and re-billed the whole context. The snapshot itself says it is
-    // reference data, not instructions.
-    const base = event.systemPrompt;
+    if (stale()) return undefined;
+    // Never return systemPrompt, not even unchanged: Pi takes any returned
+    // prompt as a forced prompt and rewrites the request head for this turn.
+    // Automated turns (subagent results, self-compact handoffs) skip this hook,
+    // so the cached prefix flipped and the whole context was re-billed. The
+    // snapshot itself says it is reference data, not instructions.
     if (!project) return undefined;
     const { facts, digest, small, revision } = coreSnapshot(project);
-    // L0 is policy only. Changing facts belong at the append-only message tail,
-    // not in the early system prefix. Include empty snapshots to revoke memory.
-    const systemPrompt = base;
+    // Changing facts belong at the append-only message tail, not in the early
+    // system prefix. An empty snapshot still revokes an earlier one in context.
     const deliver = (recall?: string, items = 0, omitted = 0) => {
       try { setMode(ctx, 'memory', memoryStatusLine(digest, facts.length, items)); } catch { /* the status line must not cost the prompt */ }
-      return { systemPrompt, message: memoryMessage(revision, digest.block, recall, items, omitted) };
+      const message = memoryMessage(ctx, revision, digest.block, recall, items, omitted);
+      return message ? { message } : undefined;
     };
     // The snapshot already carries all of memory: nothing to search, no encoder.
     if (facts.every(fact => digest.covered.has(fact.id))) return deliver();
@@ -485,7 +498,7 @@ export const installMemoryHooks = (pi: ExtensionAPI, options: {
     const dense = small ? false : encoderReady(project);
     const recalled = await search({ queries: recallQueries(event.prompt), limit: 8, maxBytes: 1500, dense, scoreThreshold: recallThreshold, namespaces: ['memory', 'memory.topic'] })
       .catch(() => undefined);
-    if (stale()) return { systemPrompt: event.systemPrompt };
+    if (stale()) return undefined;
     const highConfidence = (recalled?.items ?? [])
       .filter(item => (item.standing === 'supported' || item.standing === 'needs_review') && !digest.covered.has(item.id)).slice(0, 4);
     const memoryBlock = highConfidence.length

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createContextWindow } from '../src/handoff/window.ts';
 import { budgetForModel, estimateHandoffTokens } from '../src/handoff/select.ts';
-import { renderMemoryEnvelope, uniqueMemory } from '../src/handoff/memory-envelope.ts';
+import { renderMemoryEnvelope, uniqueMemory, unseenMemory } from '../src/handoff/memory-envelope.ts';
 import { retainHistory } from '../src/handoff/history.ts';
 import { maskObservations } from '../src/handoff/observations.ts';
 import { turnIsComplete, type HandoffMessage } from '../src/handoff/turns.ts';
@@ -76,6 +76,19 @@ test('retained envelopes append recall without repeating digest; snapshots revok
   assert.match(String(result[4]?.content), /replaces earlier rule snapshots/);
   assert.match(String(result[4]?.content), /No eligible facts/);
   assert.deepEqual(uniqueMemory([input[1]!]), [input[1]], 'evicted digest must be delivered again');
+});
+
+test('the next delivery sends only what retained context lacks', () => {
+  const memory = (revision: string, recall?: string) => ({ version: 1 as const, revision, snapshot: `DIGEST_${revision}`, ...(recall ? { recall } : {}) });
+  const retained = [user('first'), envelope('A', 'recall 1'), user('second')];
+  assert.equal(unseenMemory(retained, memory('A')), undefined, 'an unchanged snapshot is not resent');
+  assert.equal(unseenMemory(retained, memory('A', 'recall 1')), undefined, 'a recall already in context is not resent');
+  assert.equal(unseenMemory(retained, memory('A', 'recall 2')), 'recall 2', 'a new recall rides without the snapshot');
+  assert.match(String(unseenMemory(retained, memory('B'))), /DIGEST_B/, 'a changed snapshot is sent');
+  assert.match(String(unseenMemory([...retained, envelope('B')], memory('A'))), /DIGEST_A/, 'A-B-A is a new delivery');
+  assert.match(String(unseenMemory([user('after compaction')], memory('A'))), /DIGEST_A/, 'an evicted snapshot is sent again');
+  assert.equal(unseenMemory([user('first')], memory('empty'), 'empty'), undefined, 'no snapshot in context equals the empty baseline');
+  assert.match(String(unseenMemory(retained, memory('empty'), 'empty')), /DIGEST_empty/, 'an empty snapshot still revokes an earlier one');
 });
 
 test('envelope survives the same selection that evicts its first copy', () => {
