@@ -1,3 +1,11 @@
+## Unreleased
+
+- Breaking: pi-memory is now session-history memory. It indexes Pi's session journals (contentless SQLite FTS5 plus byte pointers; the journals stay the only source of truth) and offers one on-demand tool, `memory_context`: `search` (words, local-day or ISO `since`/`until`, `project`/`session`/`global` scope, kind), `read` (an entry by id, paged) and `summaries` (past compaction summaries).
+- Removed: curated facts and `memory_record`, the curation pipeline, the daemon, retention and sweep, the handoff and observation masking, embeddings and sqlite-vec, the child view and the eval scripts. Old databases under `~/.prjct/pi-memory` are left untouched.
+- `/memory gc` lists junk journals (temporary folders, no instruction at all, two replies or fewer; never compacted; quiet 24 h); `/memory gc confirm` deletes exactly those, with their index rows.
+- Why: sessions run for weeks and compact up to 23 times; a rule stated once was gone from the summary by compaction 21. The journal keeps everything, so the agent needs a way to find it, not a second store of curated facts (85% of lookups came back empty, 46% of writes failed).
+- Measured on 2.37 GB of real journals: 102 s first pass, 270 MB index, search p50 21 ms; 21 of 26 real `context_history` searches fully reproduced and none missed.
+
 ## 0.3.1 (2026-10-12)
 
 - Team discovery reads team markers from `${PRJCT_HOME:-~/.prjct}/teams`, where pi-team writes them, instead of Pi's own folder.

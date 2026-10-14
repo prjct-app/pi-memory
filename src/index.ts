@@ -1,390 +1,207 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { AutocompleteItem } from '@earendil-works/pi-tui';
-import { checkpointAndEnqueueLegacy } from './curation/migrate.ts';
-import { loadDaemonConfig } from './daemon/config.ts';
-import type { MemoryEngine } from './engine.ts';
-import { installMemoryHooks } from './extension/hooks.ts';
-import type { HandoffBudget } from './handoff/select.ts';
-import type { ObservationPolicy } from './handoff/observations.ts';
-import type { HistoryPolicy } from './handoff/history.ts';
-import type { OutputCapPolicy } from './handoff/caps.ts';
-import { installMemoryTools } from './extension/tools.ts';
-import { createChildView, publishChildView } from './extension/child-view.ts';
-import { planSweep, runSweep } from './retention/sweep.ts';
-import { runGc } from './retention/gc.ts';
-import { registerKnownSources, scopedEngines, type SourceInstallOptions } from './sources/install.ts';
-import { SourceRegistry, type SourceSyncResult } from './sources/registry.ts';
-import { dueAdapters, PI_SESSION_SYNC_POLICY, type SyncPolicy } from './sources/schedule.ts';
-import { SESSION_ADAPTER_ID } from './sources/session-log.ts';
-import { memoryDatabasePath, memoryHomeFor, resolveLegacyProject, sha256 } from './workspace/project-identity.ts';
-import { resolveMemoryProject } from './workspace/memory-registry.ts';
-import {
-  errorModel, panelDismissed, presentMemoryPanel, resultModel, sourcesModel, statusModel, syncModel,
-} from './extension/panel.ts';
-import { memoryPanelSpec, type MemoryOps } from './extension/memory-panel.ts';
-import { brand, openPanel, repairToolArgs } from '@prjct.app/pi-tui-kit';
-
-export type MemoryExtensionOptions = Readonly<{
-  home?: string; recallThreshold?: number;
-  /** Explicit bound for messages retained after a real model switch. */
-  handoff?: HandoffBudget;
-  /** Stale tool-output masking in the request context; `{ enabled: false }` turns it off. */
-  observations?: Partial<ObservationPolicy>;
-  /** Soft completed-history target; `{ enabled: false }` disables economic retirement. */
-  history?: Partial<HistoryPolicy>;
-  /** Source caps for bash/grep/find output; `{ enabled: false }` turns them off. */
-  outputCaps?: Partial<OutputCapPolicy>;
-  /** Thresholds that make a source due; `{ enabled: false }` turns it off. */
-  sync?: SyncPolicy;
-  /** Optional publisher adapters. pi-session remains the only default source. */
-  sources?: Omit<SourceInstallOptions, 'home'>;
-}>;
-
-const USAGE = 'Usage: /memory init | status | sources | sync [adapter] | index {json} | replay | rebuild | gc | purge [confirm] | checkpoint-wal | migrate-curated | checkpoint {json}';
-const ACTIONS = new Set(['init', 'setup', 'status', 'sources', 'sync', 'index', 'replay', 'rebuild', 'gc', 'purge', 'checkpoint-wal', 'migrate-curated', 'checkpoint']);
-const ACTION_COMPLETIONS: readonly AutocompleteItem[] = [
-  { value: 'init', label: 'init', description: 'Initialize memory for this checkout' },
-  { value: 'status', label: 'status', description: 'Show project memory status' },
-  { value: 'sources', label: 'sources', description: 'Show source adapters and sync state' },
-  { value: 'sync', label: 'sync', description: 'Scan all sources now, or choose an adapter' },
-  { value: 'index', label: 'index', description: 'Index one JSON source document' },
-  { value: 'checkpoint', label: 'checkpoint', description: 'Save an operational checkpoint from JSON' },
-  { value: 'replay', label: 'replay', description: 'Replay durable memory history' },
-  { value: 'rebuild', label: 'rebuild', description: 'Rebuild the searchable projection' },
-  { value: 'gc', label: 'gc', description: 'Run bounded memory garbage collection' },
-  { value: 'purge', label: 'purge', description: 'Show what dead or junk memory would be deleted for good; purge confirm deletes it' },
-  { value: 'checkpoint-wal', label: 'checkpoint-wal', description: 'Checkpoint the SQLite write-ahead log' },
-  { value: 'migrate-curated', label: 'migrate-curated', description: 'Queue legacy documents for curation' },
-];
-
-const argumentCompletions = (prefix: string, adapterIds: readonly string[]): AutocompleteItem[] | null => {
-  const sync = /^sync\s+([^\s]*)$/u.exec(prefix);
-  if (sync) {
-    const adapterPrefix = sync[1] ?? '';
-    const matching = adapterIds.filter(id => id.startsWith(adapterPrefix)).map(id => ({
-      value: `sync ${id}`, label: id, description: brand(`scan only the ${id} source`),
-    }));
-    return matching.length ? matching : null;
-  }
-  if (/\s/u.test(prefix)) return null;
-  const matching = ACTION_COMPLETIONS.filter(item => item.value.startsWith(prefix))
-    .map(item => ({ ...item, description: brand((item.description ?? item.value).replace(/^./u, first => first.toLowerCase())) }));
-  return matching.length ? matching : null;
-};
+import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { StringEnum, Type } from '@earendil-works/pi-ai';
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { ENTRY_KINDS } from './history/entry.ts';
+import { collect, describeCandidates, gcCandidates, type Candidate } from './history/gc.ts';
+import { backfill, indexFile, type BackfillProgress } from './history/indexer.ts';
+import { runHistory, type HistoryRequest } from './history/query.ts';
+import { openHistoryStore, type HistoryStore } from './history/store.ts';
 
 /**
- * Scans publisher sources, records fingerprints and enqueues analysis jobs.
- * It does not copy raw source bodies into the memory journal. The standalone
- * daemon publishes curated knowledge. Every adapter must declare this project's
- * owner; team, shared and foreign-project routing is rejected.
+ * Session-history memory. Pi keeps every session journal; this indexes them
+ * so the agent can search what was compacted away or happened in an earlier
+ * session, read any entry by id, and list past compaction summaries.
+ *
+ * Nothing reaches the model unless it calls memory_context: no injected
+ * recall, no rewritten context, no retired turns. The journals stay the only
+ * source of truth; the index is derived and can be rebuilt at any time.
  */
-const syncSources = async (registry: SourceRegistry, sessionId: string, project: MemoryEngine,
-  target: string | undefined, options: MemoryExtensionOptions): Promise<SourceSyncResult[]> => {
-  const engines = scopedEngines(sessionId, project, options.home === undefined ? {} : { home: options.home });
-  try {
-    // An explicit /memory sync always runs, whatever the watermarks say.
-    return target
-      ? [await registry.sync(engines.resolve, target, undefined, project.projection)]
-      : await registry.syncAll(engines.resolve, undefined, project.projection);
-  } finally {
-    await engines.dispose();
-  }
-};
+
+export type MemoryExtensionOptions = Readonly<{
+  /** Where history.sqlite lives (default: PI_MEMORY_HOME, PRJCT_HOME or ~/.prjct, then pi-memory/). */
+  home?: string;
+  /** Pi's sessions root (default: <agent dir>/sessions). */
+  sessionsRoot?: string;
+  /** Delay before older journals are indexed, so startup never waits on it. */
+  backfillDelayMs?: number;
+}>;
+
+export const memoryHome = (override?: string): string => resolve(override ?? process.env.PI_MEMORY_HOME ?? process.env.PRJCT_HOME ?? join(homedir(), '.prjct'));
+export const historyDatabasePath = (home?: string): string => join(memoryHome(home), 'pi-memory', 'history.sqlite');
+
+const LEASE_MS = 120_000;
+const USAGE = 'Usage: /memory [status] | index | rebuild | gc | gc confirm';
+
+const parameters = Type.Object({
+  action: StringEnum(['search', 'read', 'summaries'] as const),
+  query: Type.Optional(Type.String()),
+  entryId: Type.Optional(Type.String()),
+  sessionId: Type.Optional(Type.String()),
+  since: Type.Optional(Type.String()),
+  until: Type.Optional(Type.String()),
+  scope: Type.Optional(StringEnum(['project', 'session', 'global'] as const)),
+  kind: Type.Optional(StringEnum(ENTRY_KINDS)),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
+});
 
 export const installMemory = (pi: ExtensionAPI, options: MemoryExtensionOptions = {}): void => {
-  repairToolArgs(pi);
-  const registry = new SourceRegistry();
-  const registered = { done: false };
-  const running = { now: false };
-  const lastFault = { message: undefined as string | undefined };
+  const owner = `${process.pid}-${randomUUID()}`;
+  const R = {
+    store: undefined as HistoryStore | undefined,
+    file: undefined as string | undefined,
+    sessionId: '',
+    cwd: process.cwd(),
+    current: undefined as Promise<unknown> | undefined,
+    again: false,
+    backfill: undefined as AbortController | undefined,
+    progress: undefined as BackfillProgress | undefined,
+    timer: undefined as NodeJS.Timeout | undefined,
+    /** The exact journals the last /memory gc listed; confirm deletes only these. */
+    preview: undefined as Candidate[] | undefined,
+  };
+  const dbPath = historyDatabasePath(options.home);
+  const sessionsRoot = (): string => options.sessionsRoot ?? join(getAgentDir(), 'sessions');
+  const store = (): HistoryStore => (R.store ??= openHistoryStore(dbPath));
 
-  const sources = async (engine: MemoryEngine): Promise<SourceRegistry> => {
-    if (registered.done) return registry;
-    registered.done = true;
-    await registerKnownSources(registry, engine.scopeId, {
-      ...options.sources,
-      ...(options.home === undefined ? {} : { home: options.home }),
-    });
-    return registry;
+  const remember = (ctx: ExtensionContext): void => {
+    R.file = ctx.sessionManager.getSessionFile();
+    R.sessionId = ctx.sessionManager.getSessionId();
+    R.cwd = ctx.sessionManager.getCwd?.() ?? ctx.cwd;
   };
 
-  /**
-   * Sync is not automatic in the sense of running on a schedule or at every
-   * start. Each turn adds to a watermark table, and only when work since the
-   * last run crosses a threshold does a source get re-read — in the background,
-   * so the turn is never waiting on it, and never twice at once.
-   */
-  // Automatic sync only enqueues analysis for the daemon; without an analysis
-  // provider those jobs never run, so there is nothing to enqueue.
-  const analysis: { configured?: Promise<boolean> } = {};
-  const analysisConfigured = (): Promise<boolean> => analysis.configured ??= loadDaemonConfig({ home: memoryHomeFor(options.home) })
-    .then(config => Boolean(config.provider), () => false);
+  /** Indexes the current journal; overlapping requests fold into one more pass. */
+  const indexCurrent = (): Promise<unknown> => {
+    if (R.current) { R.again = true; return R.current; }
+    const run = async (): Promise<void> => {
+      do {
+        R.again = false;
+        if (R.file) await indexFile(store(), R.file).catch(() => undefined);
+      } while (R.again);
+    };
+    R.current = run().finally(() => { R.current = undefined; });
+    return R.current;
+  };
 
-  const syncIfDue = async (project: MemoryEngine): Promise<void> => {
-    if (options.sync?.enabled === false || running.now) return;
-    if (!(await analysisConfigured())) return;
-    const ready = await sources(project);
-    const due = ready.list().filter(adapter => dueAdapters(project.projection, [adapter], adapter === SESSION_ADAPTER_ID
-      ? { ...PI_SESSION_SYNC_POLICY, enabled: options.sync?.enabled ?? true }
-      : options.sync ?? {})[0]?.due);
-    if (!due.length) return;
-    running.now = true;
-    const engines = scopedEngines(project.journal.sessionId, project, options.home === undefined ? {} : { home: options.home });
+  const runBackfill = async (): Promise<BackfillProgress | undefined> => {
+    if (R.backfill) return R.progress;
+    const history = store();
+    if (!history.lease(owner, LEASE_MS)) return undefined;
+    const controller = new AbortController();
+    R.backfill = controller;
     try {
-      for (const adapter of due) {
-        await ready.sync(engines.resolve, adapter, undefined, project.projection).catch(error => {
-          lastFault.message = error instanceof Error ? error.message : String(error);
-        });
-      }
+      R.progress = await backfill(history, sessionsRoot(), {
+        signal: controller.signal, ...(R.file ? { skip: R.file } : {}),
+        onFile: progress => { R.progress = progress; return history.lease(owner, LEASE_MS); },
+      });
+      return R.progress;
     } finally {
-      await engines.dispose().catch(() => undefined);
-      running.now = false;
+      R.backfill = undefined;
+      try { history.release(owner); } catch { /* closed during shutdown */ }
     }
   };
 
-  // Outside a git repository nothing can be recorded, so the tools only cost
-  // schema tokens and failed calls. Restore exactly what was hidden.
-  const MEMORY_TOOLS = ['memory_context', 'memory_record'];
-  const hidden: { tools: readonly string[] } = { tools: [] };
-  const syncToolVisibility = async (): Promise<void> => {
-    if (typeof pi.getActiveTools !== 'function' || typeof pi.setActiveTools !== 'function') return;
-    const where = await runtime.location().catch(() => undefined);
-    const bound = where ? await resolveMemoryProject(where.path, memoryHomeFor(options.home)).catch(() => undefined) : undefined;
-    const available = Boolean(where?.repository || bound);
-    const active = pi.getActiveTools();
-    const next = available ? [...new Set([...active, ...hidden.tools])] : active.filter(name => !MEMORY_TOOLS.includes(name));
-    hidden.tools = available ? [] : MEMORY_TOOLS.filter(name => active.includes(name) || hidden.tools.includes(name));
-    if (next.length !== active.length || next.some((name, index) => name !== active[index])) pi.setActiveTools(next);
+  const stop = (): void => {
+    if (R.timer) clearTimeout(R.timer);
+    R.timer = undefined;
+    R.backfill?.abort();
   };
 
-  const runtime = installMemoryHooks(pi, {
-    ...(options.home === undefined ? {} : { home: options.home }),
-    ...(options.recallThreshold === undefined ? {} : { recallThreshold: options.recallThreshold }),
-    ...(options.handoff === undefined ? {} : { handoff: options.handoff }),
-    ...(options.observations === undefined ? {} : { observations: options.observations }),
-    ...(options.history === undefined ? {} : { history: options.history }),
-    ...(options.outputCaps === undefined ? {} : { outputCaps: options.outputCaps }),
-    // Deliberately not awaited by the hook: a source scan must never sit
-    // between the user's prompt and the agent starting.
-    onActivity: project => { void syncIfDue(project).catch(() => undefined); },
-    onSessionStart: () => syncToolVisibility(),
+  pi.on('session_start', async (_event, ctx) => {
+    remember(ctx);
+    stop();
+    R.timer = setTimeout(() => {
+      R.timer = undefined;
+      void indexCurrent().then(runBackfill).catch(() => undefined);
+    }, options.backfillDelayMs ?? 3_000);
+    R.timer.unref?.();
   });
-  installMemoryTools(pi, runtime);
-  // Subagents and Team Experts start without extensions; their parent reads memory for them through this view.
-  publishChildView(createChildView({ engine: () => runtime.engine(), search: runtime.search }));
+  const follow = async (_event: unknown, ctx: ExtensionContext): Promise<void> => { remember(ctx); void indexCurrent(); };
+  pi.on('message_end', follow);
+  pi.on('session_compact', follow);
+  pi.on('session_tree', follow);
+  pi.on('session_shutdown', async () => {
+    stop();
+    await R.current?.catch(() => undefined);
+    R.store?.close();
+    R.store = undefined;
+  });
 
-
-  const adapterIds = [...new Set([
-    SESSION_ADAPTER_ID,
-    ...(options.sources?.prjct ? ['prjct-observations'] : []),
-    ...(options.sources?.extra ?? []).map(adapter => adapter.id),
-  ].filter(id => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id)))].sort();
+  pi.registerTool({
+    name: 'memory_context',
+    label: 'Memory',
+    description: 'Search and read session history, including what compaction removed and earlier sessions of this project. '
+      + 'Actions: search, read, summaries.',
+    parameters,
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      remember(ctx);
+      await indexCurrent();
+      const request = params as HistoryRequest;
+      if (request.action === 'read' && !request.entryId) {
+        throw new Error('read needs entryId from search or summaries. search: query (words, any order), since/until (YYYY-MM-DD or ISO), '
+          + 'scope project (default) | session | global, kind, offset. summaries: since/until, scope, sessionId.');
+      }
+      const result = await runHistory(store(), request, {
+        sessionId: R.sessionId, cwd: R.cwd,
+        ...(R.backfill && R.progress ? { indexing: { done: R.progress.done, files: R.progress.files } } : {}),
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], details: result };
+    },
+  });
 
   pi.registerCommand('memory', {
-    description: brand('project memory: panel, init, sync, gc, prune, rebuild'),
-    getArgumentCompletions: prefix => argumentCompletions(prefix, adapterIds),
+    description: 'Session history index: status, index, rebuild, gc',
+    getArgumentCompletions: prefix => ['status', 'index', 'rebuild', 'gc', 'gc confirm'].filter(value => value.startsWith(prefix.trim()))
+      .map(value => ({ value, label: value })),
     handler: async (args, ctx) => {
-      const [first, second] = args.trim().split(/\s+/).filter(Boolean);
-      if ((first === undefined || first === 'status' || first === 'sources') && second === undefined
-        && ctx.mode === 'tui' && ctx.hasUI && typeof ctx.ui.custom === 'function') {
-        const home = memoryHomeFor(options.home);
-        const summary = (value: unknown): string => typeof value === 'object' && value
-          ? Object.entries(value).filter(([, item]) => item === null || ['string', 'number', 'boolean'].includes(typeof item))
-            .slice(0, 4).map(([key, item]) => `${key} ${String(item)}`).join(' · ')
-          : String(value);
-        const ops: MemoryOps = {
-          load: async () => {
-            const binding = await resolveMemoryProject((await runtime.location()).path, home);
-            if (!binding) return { initialized: false, ready: false, legacy: Boolean(await resolveLegacyProject(ctx.cwd, home)), sources: [] };
-            if (!existsSync(memoryDatabasePath(home, binding.projectId))) return { initialized: true, ready: false, project: binding.projectId, sources: [] };
-            const engine = await runtime.engine();
-            const ready = await sources(engine);
-            return {
-              initialized: true, ready: true, project: binding.projectId, scope: `${engine.scopeKind}/${engine.scopeId}`,
-              stats: engine.projection.stats(), curation: engine.curation.stats(),
-              sources: ready.list().map(adapter => ({
-                ...dueAdapters(engine.projection, [adapter], adapter === SESSION_ADAPTER_ID
-                  ? { ...PI_SESSION_SYNC_POLICY, enabled: options.sync?.enabled ?? true }
-                  : options.sync ?? {})[0]!,
-                last: engine.projection.syncState(adapter) ?? null,
-              })),
-              ...(lastFault.message ? { error: lastFault.message } : {}),
-            };
-          },
-          init: async () => {
-            const done = await runtime.initialize();
-            return `${done.created ? 'Initialized' : 'Already initialized'} · project ${done.binding.projectId}`
-;
-          },
-          sync: async adapter => {
-            const engine = await runtime.engine();
-            const results = await syncSources(await sources(engine), ctx.sessionManager.getSessionId(), engine, adapter, options);
-            const seen = results.reduce((sum, item) => sum + item.discovered, 0);
-            const added = results.reduce((sum, item) => sum + item.indexed, 0);
-            const queued = results.reduce((sum, item) => sum + item.queued, 0);
-            const gaps = results.flatMap(item => item.gaps);
-            return `Synced ${adapter ?? 'all sources'} · ${seen} seen · ${added} new · ${queued} queued${gaps.length ? ` · gap: ${gaps[0]}` : ''}`;
-          },
-          gc: async () => `GC · ${summary(await runGc(await runtime.engine()))}`,
-          checkpointWal: async () => `WAL checkpoint · ${summary((await runtime.engine()).projection.checkpointWal())}`,
-          rebuild: async () => `Rebuilt · ${summary(await (await runtime.engine()).rebuild())}`,
-        };
-        try {
-          await openPanel(ctx, memoryPanelSpec(ops, await ops.load()));
-        } catch (error) {
-          if (!panelDismissed(error)) throw error;
-        }
-        return;
-      }
-      const show = (model: Parameters<typeof presentMemoryPanel>[1]): Promise<void> => presentMemoryPanel(ctx,
-        (args.trim().split(/\s+/)[0] || 'status') === 'status'
-          ? { ...model, rows: [{ id: 'cache-policy', cells: ['cache policy session-references-v2'] }, ...model.rows] } : model);
-      try {
-      const [action = 'status', target] = args.trim().split(/\s+/).filter(Boolean);
-      if (!ACTIONS.has(action)) throw new Error(USAGE);
-      const home = memoryHomeFor(options.home);
-      if (action === 'init') {
-        if (target) throw new Error('Usage: /memory init');
-        const initialized = await runtime.initialize();
-        await show(resultModel('memory · init', [
-          `status ${initialized.created ? 'initialized' : 'already initialized'}`,
-          `project ${initialized.binding.projectId}`,
-          `checkout ${initialized.binding.checkoutId}`,
-          `source ${initialized.binding.source}`,
-          `location ${initialized.binding.location}`,
-        ]));
-        return;
-      }
-      if (action === 'purge') {
-        if (target && target !== 'confirm') throw new Error('Usage: /memory purge [confirm]');
-        const project = await runtime.engine();
-        const plan = await planSweep(project);
-        const examples = plan.junk.slice(0, 5).map(item => `junk  ${item.statement.slice(0, 90)}`);
-        if (target !== 'confirm') {
-          await show(resultModel('memory · purge (preview)', [
-            `dead ${plan.dead.length} superseded or contradicted facts`,
-            `junk ${plan.junk.length} live failures that are one run's state (raw tool output only)`,
-            ...examples,
-            'run /memory purge confirm to back up and delete them for good',
-          ]));
-          return;
-        }
-        const done = await runSweep(project, plan, join(home, 'backups', `purge-${new Date().toISOString().slice(0, 10)}`));
-        await show(resultModel('memory · purge', [
-          `deleted ${done.facts} facts · ${done.documents} documents · ${done.evidence} evidence · ${done.events} journal events`,
-          ...(done.deferred ? [`deferred ${done.deferred} journal streams another session is writing; the next GC finishes them`] : []),
-          `backup ${done.backup ?? 'none needed'}`,
-        ]));
-        return;
-      }
-      if (action === 'status') {
-        const binding = await resolveMemoryProject((await runtime.location()).path, home);
-        if (!binding) {
-          const legacy = await resolveLegacyProject(ctx.cwd, home);
-          await show(resultModel('memory · status', [
-            'initialized no', 'ready no', `legacy ${legacy ? 'available' : 'none'}`, 'run /memory init',
-          ]));
-          return;
-        }
-        if (!existsSync(memoryDatabasePath(home, binding.projectId))) {
-          await show(resultModel('memory · status', [
-            'initialized yes', 'ready no', `project ${binding.projectId}`, 'run /memory init to repair',
-          ]));
-          return;
-        }
-        const opened = await runtime.engine();
-        await show(statusModel({
-          scope: `${opened.scopeKind}/${opened.scopeId}`, stats: opened.projection.stats(), curation: opened.curation.stats(),
-          ...(lastFault.message ? { error: lastFault.message } : {}),
-        }));
-        return;
-      }
-      const engine = await runtime.engine();
-      const scope = `${engine.scopeKind}/${engine.scopeId}`;
-      if (action === 'sources') {
-        const ready = await sources(engine);
-        await show(sourcesModel({
-          scope,
-          adapters: ready.list().map(adapter => ({
-            ...dueAdapters(engine.projection, [adapter], adapter === SESSION_ADAPTER_ID
-              ? { ...PI_SESSION_SYNC_POLICY, enabled: options.sync?.enabled ?? true }
-              : options.sync ?? {})[0]!,
-            last: engine.projection.syncState(adapter) ?? null,
-          })),
-          ...(lastFault.message ? { error: lastFault.message } : {}),
-        }));
-        return;
-      }
-      if (action === 'sync') {
-        const registryReady = await sources(engine);
-        if (target && !registryReady.get(target)) throw new Error(`Unknown source adapter: ${target}. Try /memory sources.`);
-        const results = await syncSources(registryReady, ctx.sessionManager.getSessionId(), engine, target, options);
-        await show(syncModel(results, lastFault.message));
-        return;
-      }
+      remember(ctx);
+      const action = args.trim() || 'status';
+      const say = (text: string, level: 'info' | 'warning' = 'info'): void => {
+        if (ctx.hasUI) ctx.ui.notify(text, level); else process.stdout.write(`${text}\n`);
+      };
+      const describe = (): string => {
+        const status = store().status();
+        const running = R.backfill && R.progress ? ` · indexing ${R.progress.done}/${R.progress.files}` : '';
+        return `Session history: ${status.sessions} sessions, ${status.entries.toLocaleString('en-US')} entries, `
+          + `${status.summaries} summaries, ${(status.indexedBytes / 1e6).toFixed(0)} MB of journals${running}`;
+      };
+      if (action === 'status') return say(describe());
       if (action === 'index') {
-        const raw = args.trim().slice('index'.length).trim();
-        if (!raw) throw new Error('Usage: /memory index {"namespace":"project.docs","externalId":"id","text":"..."}');
-        const parsed: unknown = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('/memory index requires a JSON object.');
-        const row = parsed as { namespace?: unknown; externalId?: unknown; text?: unknown; title?: unknown; uri?: unknown; source?: unknown; kind?: unknown; metadata?: unknown };
-        if (typeof row.namespace !== 'string' || typeof row.externalId !== 'string' || typeof row.text !== 'string' || !row.text.trim()) {
-          throw new Error('/memory index requires namespace, externalId, and non-empty text strings.');
-        }
-        const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-          ? Object.fromEntries(Object.entries(row.metadata).flatMap(([key, value]) => typeof value === 'string' ? [[key, value]] : [])) : {};
-        const indexed = await engine.index({ namespace: row.namespace, externalId: row.externalId, scopeId: engine.scopeId,
-          scopeKind: engine.scopeKind, source: typeof row.source === 'string' ? row.source : 'operator-indexed',
-          kind: typeof row.kind === 'string' ? row.kind : 'document', ...(typeof row.title === 'string' ? { title: row.title } : {}),
-          text: row.text, ...(typeof row.uri === 'string' ? { uri: row.uri } : {}), version: sha256(row.text), contentHash: sha256(row.text),
-          observedAt: new Date().toISOString(), trust: 'user', metadata });
-        await show(resultModel('memory · index', [`chunks ${indexed.chunks}`, `dense ${String(indexed.dense)}`]));
-        return;
+        await indexCurrent();
+        const progress = await runBackfill();
+        return say(progress ? `${describe()} · +${progress.added.toLocaleString('en-US')} entries` : 'Another Pi process is indexing the history.', progress ? 'info' : 'warning');
       }
-      if (action === 'migrate-curated') {
-        const migrated = await checkpointAndEnqueueLegacy(engine);
-        await show(resultModel('memory · migrate', Object.entries(migrated).filter(([, value]) =>
-          value === null || ['string', 'number', 'boolean'].includes(typeof value)).slice(0, 8).map(([key, value]) => `${key} ${String(value)}`)));
-        return;
+      if (action === 'rebuild') {
+        stop();
+        await R.current?.catch(() => undefined);
+        R.store?.close();
+        R.store = undefined;
+        await Promise.all(['', '-wal', '-shm'].map(suffix => rm(`${dbPath}${suffix}`, { force: true })));
+        await indexCurrent();
+        const progress = await runBackfill();
+        return say(progress ? `Rebuilt. ${describe()}` : 'Rebuilt the current session; another Pi process holds the history scan.');
       }
-      if (action === 'checkpoint') {
-        const raw = args.trim().slice('checkpoint'.length).trim();
-        if (!raw) throw new Error('Usage: /memory checkpoint {"goal":"...","constraints":[],"done":[],"inProgress":[],"blocked":[],"decisions":[],"evidenceRefs":[],"nextSteps":[]}');
-        const parsed: unknown = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-          || typeof (parsed as { goal?: unknown }).goal !== 'string' || !(parsed as { goal: string }).goal.trim()) {
-          throw new Error('/memory checkpoint requires a non-empty goal.');
-        }
-        const saved = await runtime.handoff.persist(engine, ctx.sessionManager.getSessionId(),
-          parsed as Parameters<typeof runtime.handoff.persist>[2]);
-        await show(resultModel('memory · checkpoint', [`ok ${String(Boolean(saved))}`]));
-        return;
+      if (action === 'gc') {
+        await indexCurrent();
+        const progress = await runBackfill();
+        if (!progress) return say('Another Pi process is indexing the history; run /memory gc when it finishes.', 'warning');
+        R.preview = await gcCandidates(store(), R.file ? [R.file] : []);
+        return say(R.preview.length ? `${describeCandidates(R.preview)}\nDelete them for good with /memory gc confirm.` : 'No junk sessions.');
       }
-      const report = action === 'replay' ? await engine.replay(false)
-        : action === 'rebuild' ? await engine.rebuild()
-        : action === 'gc' ? await runGc(engine)
-        : action === 'checkpoint-wal' ? engine.projection.checkpointWal()
-        : undefined;
-      if (report === undefined) throw new Error(USAGE);
-      await show(resultModel(`memory · ${action}`, typeof report === 'object' && report
-        ? Object.entries(report).filter(([, value]) => value === null || ['string', 'number', 'boolean'].includes(typeof value))
-          .slice(0, 8).map(([key, value]) => `${key} ${String(value)}`)
-        : [String(report)]));
-      } catch (error) {
-        if (panelDismissed(error)) return;
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.startsWith('Usage:')) lastFault.message = message;
-        await presentMemoryPanel(ctx, errorModel(message)).catch(() => undefined);
-        throw error;
+      if (action === 'gc confirm') {
+        if (!R.preview) return say('Run /memory gc first to see what would be deleted.', 'warning');
+        const outcome = await collect(store(), R.preview);
+        R.preview = undefined;
+        return say(`Deleted ${outcome.deleted} sessions (${(outcome.bytes / 1e6).toFixed(1)} MB)`
+          + `${outcome.skipped ? `; ${outcome.skipped} changed since the preview and were kept` : ''}.`);
       }
+      return say(USAGE, 'warning');
     },
   });
 };
 
-export default function memoryExtension(pi: ExtensionAPI): void {
+export default function memory(pi: ExtensionAPI): void {
   installMemory(pi);
 }
-
-export { hostEvidence, MemoryEngine } from './engine.ts';

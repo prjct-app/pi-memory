@@ -1,9 +1,0 @@
-[
-  "prjct gauntlet runs the project verify commands and records a receipt bound to git HEAD; ship refuses a red receipt.",
-  "prjct stores SQLite state as one DB file per project at ~/.prjct-cli/projects/{id}/prjct.db, not as a shared multi-project database.",
-  "Putting all project state in a local .prjct/ directory was the pre-v1.24.1 model and is not current; SQLite is the source of truth.",
-  "PRJCT_CLI_HOME relocates the entire global store (DB + config + sync metadata).",
-  "prjct no longer exposes native Linear/Jira CLI gateway commands.",
-  "Living context synthesis is written by the executing model and captures Context synthesis, Key data, What happened, Why it mattered, Who/author, Model, Token usage, Sentiment, Related files, Feature/domain, Pattern, Anti-pattern, Decision/trap, Outcome, and Next implication.",
-  "High-stakes types such as decision/learning/fact pass the capture gate when content is not an exact hash duplicate and is not refused as empty, junk, or a precision failure, unless the source is auto-derived."
-]

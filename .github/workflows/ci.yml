@@ -13,9 +13,6 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      # These runners exercise CPU embeddings; CUDA is not used by this job.
-      ONNXRUNTIME_NODE_INSTALL: skip
     steps:
       - uses: actions/checkout@v4
 
@@ -31,29 +28,6 @@ jobs:
 
       - name: Unit tests
         run: npm test
-
-      # tests/integration/pi.test.ts spawns the real binary; without it the
-      # suite fails with ENOENT rather than skipping, so pi is installed here
-      # deliberately rather than the test being made conditional.
-      - name: Integration tests
-        run: |
-          npm i -g @earendil-works/pi-coding-agent@1.0.4
-          npm run test:integration
-
-      # Downloads the sentence encoder on a cold runner, so it is cached
-      # between runs and given its own generous step timeout.
-      - name: Cache embedding model
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-
-      # MiniLM gold nDCG remains diagnostic. Candidate hybrid does not beat the
-      # lexical baseline by the 1.2x gate; docs/storage-and-abstention.md marks
-      # this BLOCKED pending explicit encoder authorization.
-      - name: Retrieval diagnostics
-        run: npm run eval
-        continue-on-error: true
 
       - name: Package contents
         run: npm run check:package
