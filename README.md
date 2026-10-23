@@ -14,7 +14,7 @@ Session-history memory for Pi. Long sessions compact many times, and every compa
 pi install npm:@prjct.app/pi-memory
 ```
 
-Requires Pi and Node.js 22.19 or later (`node:sqlite` with FTS5). No runtime dependencies.
+Requires Pi and Node.js 22.23.4 or later (`node:sqlite` with FTS5). No runtime dependencies.
 
 ## `memory_context`
 
